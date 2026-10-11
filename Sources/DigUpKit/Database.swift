@@ -23,7 +23,19 @@ public final class Database {
         }
         handle = db
         sqlite3_busy_timeout(db, 5000)
-        try execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")
+        // Two processes opening a new index at once (a shell starts its search and index helpers together): the switch
+        // to WAL can fail at once with "database is locked" rather than wait (SQLite's rule against deadlocks), so it's
+        // tried again for up to five seconds.
+        var tries = 0
+        while true {
+            do {
+                try execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")
+                break
+            } catch where sqlite3_errcode(db) == SQLITE_BUSY && tries < 50 {
+                tries += 1
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
     }
 
     deinit { sqlite3_close_v2(handle) }
