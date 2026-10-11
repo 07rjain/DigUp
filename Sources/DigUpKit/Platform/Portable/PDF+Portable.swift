@@ -9,16 +9,29 @@ enum PDFium {
     static let lock = NSLock()
     private static let ready: Void = { FPDF_InitLibrary() }()
 
-    /// Runs `body` with the document open. `locked` when it needs a password, `unreadable` when it won't open.
+    /// Runs `body` with the document open. `locked` when it needs a password, `unreadable` when it won't open. PDFium
+    /// reads through `FileReader` (any file name opens; a big file is never read whole).
     static func withDocument<T>(_ url: URL, _ body: (FPDF_DOCUMENT) throws -> T) throws -> T {
         _ = ready
-        return try lock.withLock {
-            guard let document = FPDF_LoadDocument(url.path, nil) else {
-                throw FPDF_GetLastError() == UInt(FPDF_ERR_PASSWORD) ? ExtractError.locked
-                    : ExtractError.unreadable("can't open PDF")
+        let reader = try FileReader(url)
+        // PDFium counts in C's unsigned long: 4 GB at most on Windows.
+        guard reader.size <= UInt64(CUnsignedLong.max) else { throw ExtractError.unreadable("too big") }
+        var access = FPDF_FILEACCESS()
+        access.m_FileLen = CUnsignedLong(reader.size)
+        access.m_Param = reader.opaque
+        access.m_GetBlock = { param, position, buffer, size in
+            guard let buffer else { return 0 }
+            return FileReader.from(param).read(at: UInt64(position), into: buffer, count: Int(size)) == Int(size) ? 1 : 0
+        }
+        return try withExtendedLifetime(reader) {   // PDFium reads through it until the document is closed
+            try lock.withLock {
+                guard let document = FPDF_LoadCustomDocument(&access, nil) else {
+                    throw FPDF_GetLastError() == UInt(FPDF_ERR_PASSWORD) ? ExtractError.locked
+                        : ExtractError.unreadable("can't open PDF")
+                }
+                defer { FPDF_CloseDocument(document) }
+                return try body(document)
             }
-            defer { FPDF_CloseDocument(document) }
-            return try body(document)
         }
     }
 

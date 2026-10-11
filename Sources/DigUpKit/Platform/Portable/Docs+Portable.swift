@@ -35,18 +35,28 @@ extension DocExtractor {
     }
 }
 
-/// One entry of a zip file, through miniz.
+/// One entry of a zip file, through miniz (reading through `FileReader`, so any file name opens).
 enum Zip {
     static func entry(_ name: String, in url: URL) throws -> String {
+        let reader = try FileReader(url)
         var zip = mz_zip_archive()
-        guard mz_zip_reader_init_file(&zip, url.path, 0) != 0 else { throw ExtractError.unreadable("not a zip file") }
-        defer { mz_zip_reader_end(&zip) }
-        var size = 0
-        guard let bytes = mz_zip_reader_extract_file_to_heap(&zip, name, &size, 0) else {
-            throw ExtractError.unreadable("no \(name) inside")
+        zip.m_pIO_opaque = reader.opaque
+        zip.m_pRead = { opaque, offset, buffer, count in
+            guard let buffer else { return 0 }
+            return FileReader.from(opaque).read(at: offset, into: buffer, count: count)
         }
-        defer { mz_free(bytes) }
-        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
+        return try withExtendedLifetime(reader) {   // miniz reads through it until the end
+            guard mz_zip_reader_init(&zip, reader.size, 0) != 0 else {
+                throw ExtractError.unreadable("not a zip file")
+            }
+            defer { mz_zip_reader_end(&zip) }
+            var size = 0
+            guard let bytes = mz_zip_reader_extract_file_to_heap(&zip, name, &size, 0) else {
+                throw ExtractError.unreadable("no \(name) inside")
+            }
+            defer { mz_free(bytes) }
+            return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
+        }
     }
 }
 
