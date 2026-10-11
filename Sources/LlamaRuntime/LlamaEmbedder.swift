@@ -68,6 +68,10 @@ public final class LlamaEmbedder: Embedder {
         params.kv_unified = true   // each input may use the whole context, as in llama-embedding
         params.embeddings = true
         params.pooling_type = LLAMA_POOLING_TYPE_MEAN
+        #if !os(macOS)
+        params.n_threads = Self.threads
+        params.n_threads_batch = Self.threads
+        #endif
         guard let context = llama_init_from_model(model, params) else {
             llama_model_free(model)
             throw WorkerError.failed("can't create a llama.cpp context")
@@ -80,6 +84,9 @@ public final class LlamaEmbedder: Embedder {
             mediaParams.warmup = true
             mediaParams.image_min_tokens = 1      // never rescale: images arrive at their final size (ImageSizing)
             mediaParams.image_max_tokens = 1120
+            #if !os(macOS)
+            mediaParams.n_threads = Self.threads
+            #endif
             media = mtmd_init_from_file(mediaFile.path, model, mediaParams)
             if media == nil {
                 llama_free(context)
@@ -317,6 +324,15 @@ public final class LlamaEmbedder: Embedder {
     }()
 
     #if !os(macOS)
+    /// The threads llama.cpp computes on (what runs on the CPU: all of it on a machine without a GPU): every logical
+    /// processor up to 8, where llama.cpp's default is 4; `DIGUP_THREADS` says otherwise. 43 photos, 2026-10-12: an
+    /// i5-8350U laptop (4 cores, 8 threads) 227 s on 4 threads, 174 s on 8; a Core Ultra 9 285K (8 + 16
+    /// cores) 48 s on 4, 31 s on 8, 29–30 s on 12, 40 s on 24 (its slow cores hold the others back).
+    static let threads: Int32 = {
+        let chosen = ProcessInfo.processInfo.environment["DIGUP_THREADS"].flatMap(Int32.init)
+        return max(1, chosen ?? Int32(min(ProcessInfo.processInfo.activeProcessorCount, 8)))
+    }()
+
     /// On Linux and Windows ggml's backends are shared libraries (GGML_BACKEND_DL, scripts/build-llama.sh): the CPU
     /// variants always, CUDA or Vulkan when the machine has them. They're looked for in $DIGUP_BACKENDS, then beside this
     /// executable, then wherever ggml itself looks; whatever loads and works is what the model runs on.
