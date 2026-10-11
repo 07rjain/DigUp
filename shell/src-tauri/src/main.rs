@@ -66,12 +66,14 @@ impl Shell {
         self.options.hotkey.clone().unwrap_or(if chosen.is_empty() { DEFAULT_HOTKEY.to_string() } else { chosen })
     }
 
+    /// A background helper (indexing, the download), below the person's own programs for the processor.
     fn launch(&self, args: Vec<String>, log: &str) -> Launch {
         Launch {
             program: self.options.helper.clone(),
             args,
             env: self.options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
             log: Some(self.logs.join(log)),
+            background: true,
         }
     }
 
@@ -291,6 +293,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
             args: search_args,
             env: options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
             log: Some(logs.join("search.log")),
+            background: false,   // it answers typing
         },
         {
             let app = handle.clone();

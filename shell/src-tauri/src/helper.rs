@@ -23,6 +23,8 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
     /// Where its standard error goes (llama.cpp and the helper write their warnings there).
     pub log: Option<PathBuf>,
+    /// Work in the background (indexing, the download): below the person's own programs for the processor.
+    pub background: bool,
 }
 
 impl Launch {
@@ -40,7 +42,19 @@ impl Launch {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes up
+            // CREATE_NO_WINDOW (no console flashes up), and BELOW_NORMAL_PRIORITY_CLASS for background work.
+            command.creation_flags(0x0800_0000 | if self.background { 0x0000_4000 } else { 0 });
+        }
+        #[cfg(unix)]
+        if self.background {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: nice() only changes the new process's own priority, between fork and exec.
+            unsafe {
+                command.pre_exec(|| {
+                    libc::nice(10);
+                    Ok(())
+                });
+            }
         }
         let mut child = command.spawn().map_err(|error| format!("can't start {}: {error}", self.program.display()))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
