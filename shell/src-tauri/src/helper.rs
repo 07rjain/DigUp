@@ -147,27 +147,30 @@ impl SearchService {
     }
 }
 
-/// `digup index-service`: syncs the index with the folders, indexes what's new, and exits once it's done. `run`
-/// starts it, or asks the running one to sync again.
+/// `digup index-service`: syncs the index with the folders, indexes what's new, and exits once it's done. `run` starts
+/// it, asks the running one to sync again, or, when the folders changed (another launch), starts it over with them.
 pub struct IndexService {
-    launch: Launch,
-    running: Mutex<Option<(Child, ChildStdin)>>,
+    running: Mutex<Option<(Child, ChildStdin, Vec<String>)>>,
     on_event: EventSink,
 }
 
 impl IndexService {
-    pub fn new(launch: Launch, on_event: impl Fn(Value) + Send + Sync + 'static) -> IndexService {
-        IndexService { launch, running: Mutex::new(None), on_event: Arc::new(on_event) }
+    pub fn new(on_event: impl Fn(Value) + Send + Sync + 'static) -> IndexService {
+        IndexService { running: Mutex::new(None), on_event: Arc::new(on_event) }
     }
 
-    pub fn run(&self) -> Result<(), String> {
+    pub fn run(&self, launch: &Launch) -> Result<(), String> {
         let mut running = self.running.lock().unwrap();
-        if let Some((child, stdin)) = running.as_mut() {
+        if let Some((child, stdin, args)) = running.as_mut() {
             if matches!(child.try_wait(), Ok(None)) {
-                return writeln!(stdin, "sync").and_then(|_| stdin.flush()).map_err(|error| error.to_string());
+                if *args == launch.args {
+                    return writeln!(stdin, "sync").and_then(|_| stdin.flush()).map_err(|error| error.to_string());
+                }
+                let (child, stdin, _) = running.take().unwrap();
+                stop(child, stdin, "stop");
             }
         }
-        let (child, stdin, stdout) = self.launch.spawn()?;
+        let (child, stdin, stdout) = launch.spawn()?;
         let on_event = self.on_event.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -178,13 +181,60 @@ impl IndexService {
             }
             on_event(json!({"event": "exit"}));
         });
-        *running = Some((child, stdin));
+        *running = Some((child, stdin, launch.args.clone()));
         Ok(())
     }
 
     pub fn stop(&self) {
-        if let Some((child, stdin)) = self.running.lock().unwrap().take() {
+        if let Some((child, stdin, _)) = self.running.lock().unwrap().take() {
             stop(child, stdin, "stop");
+        }
+    }
+}
+
+/// `digup download-model`: the model files, from the Hugging Face cache or downloaded with resume, each checked. One at
+/// a time; `run` again while it runs does nothing. Its events ("progress", "done", "error"…) go to `on_event`.
+pub struct ModelDownload {
+    running: Mutex<Option<Child>>,
+    on_event: EventSink,
+}
+
+impl ModelDownload {
+    pub fn new(on_event: impl Fn(Value) + Send + Sync + 'static) -> ModelDownload {
+        ModelDownload { running: Mutex::new(None), on_event: Arc::new(on_event) }
+    }
+
+    pub fn run(&self, launch: &Launch) -> Result<(), String> {
+        let mut running = self.running.lock().unwrap();
+        if let Some(child) = running.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                return Ok(());
+            }
+        }
+        let (child, stdin, stdout) = launch.spawn()?;
+        drop(stdin);
+        let on_event = self.on_event.clone();
+        std::thread::spawn(move || {
+            let mut ended = false;
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                    ended |= event["event"] == "done" || event["event"] == "error";
+                    on_event(event);
+                }
+            }
+            if !ended {
+                on_event(json!({"event": "error", "message": "the download stopped"}));
+            }
+        });
+        *running = Some(child);
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        if let Some(mut child) = self.running.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

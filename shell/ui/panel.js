@@ -559,12 +559,14 @@ tauri.path.homeDir().then((home) => { state.home = home.replace(/[\\/]$/, ""); }
 
 // Debug runs (--debug-query): type the query in, and once the meaning results and their pictures are in, report
 // what the panel shows.
-invoke("debug_query").then((query) => {
+function debugSearch(query) {
   if (!query) return;
   debugPending = true;
   $query.value = query;
   queryChanged();
-});
+}
+invoke("debug_query").then(debugSearch);
+tauri.event.listen("debug-query", ({ payload }) => debugSearch(payload));   // after setup's first index
 
 function report() {
   debugPending = false;

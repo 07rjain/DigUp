@@ -14,9 +14,16 @@ pub struct Options {
     pub index: Option<PathBuf>,
     /// Where the model files are (DIGUP_MODELS for the helpers); None: the helper looks where it always does.
     pub models: Option<PathBuf>,
-    /// The folders to search and keep indexed.
+    /// The folders to search and keep indexed, instead of the settings' (dev runs; setup is then skipped).
     pub roots: Vec<PathBuf>,
-    pub hotkey: String,
+    /// The hotkey, instead of the settings'.
+    pub hotkey: Option<String>,
+    /// The settings file, instead of the one in the app's config folder (a fresh first launch in tests).
+    pub settings: Option<PathBuf>,
+    /// The folders setup offers, instead of the usual ones (Documents, Pictures…): dev runs never offer real folders.
+    pub offered: Option<Vec<PathBuf>>,
+    /// Debug runs: setup clicks through by itself (all offered folders, the default hotkey).
+    pub debug_setup: bool,
     /// Debug runs: the panel types this query in when it loads and reports what it showed (`debug_report`), hidden
     /// unless `debug_show`: a panel on screen takes the keyboard.
     pub debug_query: Option<String>,
@@ -33,7 +40,10 @@ impl Options {
             index: None,
             models: None,
             roots: Vec::new(),
-            hotkey: DEFAULT_HOTKEY.to_string(),
+            hotkey: None,
+            settings: None,
+            offered: None,
+            debug_setup: false,
             debug_query: None,
             debug_quit: false,
             debug_show: false,
@@ -47,7 +57,10 @@ impl Options {
                 "--models" => options.models = Some(value()?.into()),
                 // Separated as PATH is: ":" here, ";" on Windows.
                 "--roots" => options.roots = std::env::split_paths(&value()?).collect(),
-                "--hotkey" => options.hotkey = value()?,
+                "--hotkey" => options.hotkey = Some(value()?),
+                "--settings" => options.settings = Some(value()?.into()),
+                "--offer" => options.offered = Some(std::env::split_paths(&value()?).collect()),
+                "--debug-setup" => options.debug_setup = true,
                 "--debug-query" => options.debug_query = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
@@ -59,6 +72,21 @@ impl Options {
             return Err("pass --index: on a Mac the default index belongs to the DigUp app".into());
         }
         Ok(options)
+    }
+}
+
+impl Options {
+    /// The index folder the helpers use: the one given, else the helper's default (which the watcher must pass over).
+    pub fn index_folder(&self) -> Option<PathBuf> {
+        if self.index.is_some() {
+            return self.index.clone();
+        }
+        if cfg!(windows) {
+            return std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("DigUp").join("index"));
+        }
+        let data = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+        data.map(|data| data.join("digup").join("index"))
     }
 }
 
