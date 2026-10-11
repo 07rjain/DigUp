@@ -47,6 +47,7 @@ const state = {
   height: FIELD_HEIGHT,
   home: "",
   error: null,
+  indexing: null,        // {done, total} while the index helper works through new files
 };
 let debugPending = false;
 
@@ -234,6 +235,10 @@ function renderPreview() {
   if (!state.strong.length && !state.weaker.length) {
     if (state.phase === "codeHint") {
       $preview.append(message("Search your code", "Say what the code does, or type a name that's in it."));
+    } else if (state.indexing) {
+      const { done, total } = state.indexing;
+      $preview.append(message("Nothing yet", `Still indexing (${done} of ${total} files). Until a file is read, `
+        + "DigUp finds it only by its name."));
     } else if (state.isCode) {
       $preview.append(message("No good matches in your code", "Try saying what the code does, or a name that's in it."));
     } else {
@@ -340,6 +345,8 @@ function renderFooter() {
   } else if (state.phase === "wordsOnly") summary = "Words only: meaning search isn't available";
   else if (state.phase === "codeHint") summary = "Searching your code";
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
+  // Results while indexing are partial: say so where they're counted.
+  if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
   $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}`;
 }
@@ -547,11 +554,14 @@ tauri.event.listen("helper", ({ payload }) => {
   }
   if (from === "index") {
     if (event.event === "file" && event.total) {
+      state.indexing = { done: event.done, total: event.total };
       $activity.textContent = `Indexing ${event.done}/${event.total}`;
       $activity.hidden = false;
     } else if (event.event === "idle" || event.event === "exit") {
+      state.indexing = null;
       $activity.hidden = true;
     }
+    if (state.phase !== "empty") renderFooter();
   }
 });
 
