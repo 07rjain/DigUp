@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The panel's page: Tauri's core (events, the asset URLs). Its own commands are the shell's.",
+  "windows": ["panel"],
+  "permissions": ["core:default"]
+}
