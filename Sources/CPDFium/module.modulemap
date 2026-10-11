@@ -1,8 +1,6 @@
 // PDFium (Linux, Windows): scripts/fetch-vendor.sh puts the prebuilt library and its headers in Vendor/pdfium.
 module CPDFium [system] {
-    header "../../Vendor/pdfium/include/fpdfview.h"
-    header "../../Vendor/pdfium/include/fpdf_text.h"
-    header "../../Vendor/pdfium/include/fpdf_doc.h"
+    header "pdfium.h"
     link "pdfium"
     export *
 }

@@ -11,7 +11,7 @@ import Testing
 
     @Test func typeScriptIsNotVideo() throws {
         let file = folder.appendingPathComponent("app.ts")
-        try "export const x: number = 1;\n".write(to: file, atomically: true, encoding: .utf8)
+        try "export const x: number = 1;\n".write(to: file, atomically: false, encoding: .utf8)
         #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .skip("code or data file"))
     }
 

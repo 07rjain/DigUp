@@ -46,9 +46,13 @@ public enum Crawler {
             let skips = options.excludedFolders.filter {
                 FolderSelection.isInside($0, root.path) || FolderSelection.isInside($0, real)
             }.flatMap { [$0, FolderSelection.realPath($0)] }
+            #if os(Windows)
+            guard let walker = FileSystem.walk(root, keys: keys) else { continue }
+            #else
             guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: keys,
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants],
                                              errorHandler: { _, _ in true }) else { continue }
+            #endif
             func visit(_ url: URL) {
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 let isPackage = FileSystem.isPackage(url, values)

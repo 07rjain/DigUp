@@ -13,7 +13,7 @@ enum FFmpeg {
         if let chosen = environment["DIGUP_FFMPEG"], !chosen.isEmpty { folders.append(chosen) }
         if let executable = Bundle.main.executableURL { folders.append(executable.deletingLastPathComponent().path) }
         for folder in folders {
-            let candidate = folder + "/" + name
+            let candidate = folder + "/" + FileSystem.program(name)
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
         return FileSystem.executable(name)

@@ -4,6 +4,9 @@ import CryptoKit
 import Foundation
 import Testing
 @testable import DigUpKit
+#if os(Windows)
+import WinSDK
+#endif
 
 @Suite struct IndexStoreTests {
     let folder: URL = {
@@ -76,8 +79,8 @@ import Testing
         try FileHandle(forWritingTo: blob).truncate(atOffset: UInt64(ModelFiles.text.bytes))
         try FileManager.default.createSymbolicLink(at: snapshot.appendingPathComponent(ModelFiles.text.name),
                                                    withDestinationURL: blob)
-        setenv("HF_HUB_CACHE", hub.path, 1)
-        defer { unsetenv("HF_HUB_CACHE") }
+        setEnvironment("HF_HUB_CACHE", hub.path)
+        defer { setEnvironment("HF_HUB_CACHE", nil) }
         #expect(ModelFiles.cachedCopy(of: ModelFiles.text)?.lastPathComponent == "2188ac1d")
         #expect(ModelFiles.cachedCopy(of: ModelFiles.media) == nil)   // not there
         try FileHandle(forWritingTo: blob).truncate(atOffset: 10)
@@ -86,7 +89,7 @@ import Testing
 
     @Test func syncKeepsTheRowsOfAFolderThatWentAway() throws {
         // The real path (/private/var/…), as the crawler reports it; resolvingSymlinksInPath() would drop "/private".
-        let base = URL(fileURLWithPath: String(cString: realpath(folder.path, nil)))
+        let base = URL(fileURLWithPath: FolderSelection.realPath(folder.path))
         let drive = base.appendingPathComponent("drive")
         try FileManager.default.createDirectory(at: drive, withIntermediateDirectories: true)
         try Data("notes from the trip".utf8).write(to: drive.appendingPathComponent("notes.txt"))
@@ -100,3 +103,14 @@ import Testing
     }
 }
 
+/// Sets an environment variable of this process, or removes it (nil).
+private func setEnvironment(_ name: String, _ value: String?) {
+    #if os(Windows)
+    _ = name.withCString(encodedAs: UTF16.self) { name in
+        guard let value else { return SetEnvironmentVariableW(name, nil) }
+        return value.withCString(encodedAs: UTF16.self) { SetEnvironmentVariableW(name, $0) }
+    }
+    #else
+    if let value { setenv(name, value, 1) } else { unsetenv(name) }
+    #endif
+}

@@ -117,7 +117,7 @@ import Testing
         let text = prose(characters: 150_000, special: (at: 120_000, word: "axolotl"))
         let url = files.appendingPathComponent("Notes.txt")
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
-        try text.write(to: url, atomically: true, encoding: .utf8)
+        try text.write(to: url, atomically: false, encoding: .utf8)
         let chunks = DocExtractor.chunks(text, limit: 10_000)
         #expect(chunks.count > 80)
         let store = try store()
@@ -147,7 +147,7 @@ import Testing
         dump += "4815162342\n"
         let url = files.appendingPathComponent("sensor log.txt")
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
-        try dump.write(to: url, atomically: true, encoding: .utf8)
+        try dump.write(to: url, atomically: false, encoding: .utf8)
         #expect(!SearchText.hasWords(dump))
         #expect(SearchText.hasWords("Revenue 1,234,567 · Net income 234,567 · Margin 19% in the third quarter"))
         #expect(SearchText.hasWords("কলকাতায় বৃষ্টি হচ্ছে"))

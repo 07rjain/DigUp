@@ -4,7 +4,9 @@ import LlamaRuntime
 
 // DigUp's developer CLI. Every command works on an explicit index folder, so tests never touch the real one.
 
-signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
+#if !os(Windows)
+signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us (Windows has no SIGPIPE)
+#endif
 
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)
@@ -438,7 +440,12 @@ struct EvalFile: Decodable {
 func evaluate(_ args: Arguments) throws {
     guard let file = args.positional.first else { throw CLIError("which eval file?") }
     let eval = try JSONDecoder().decode(EvalFile.self, from: Data(contentsOf: URL(fileURLWithPath: (file as NSString).expandingTildeInPath)))
-    let base = (eval.base as NSString).expandingTildeInPath
+    var base = (eval.base as NSString).expandingTildeInPath
+    // The testbed kept elsewhere (another drive on Windows, wherever CI puts it): DIGUP_TESTBED stands for
+    // ~/DigUpTestbed in the eval's base.
+    if let testbed = ProcessInfo.processInfo.environment["DIGUP_TESTBED"], eval.base.hasPrefix("~/DigUpTestbed") {
+        base = testbed + eval.base.dropFirst("~/DigUpTestbed".count)
+    }
     // "code: …" queries search the code index (with its prompt), the others the main one.
     let isCode = eval.queries.map { CodeQuery.text(of: $0.q) != nil }
     let texts = eval.queries.map { CodeQuery.text(of: $0.q) ?? $0.q }

@@ -16,10 +16,17 @@ let portableTargets: [Target] = []
 #else
 // llama.cpp as shared libraries: ggml's backends (CPU, and CUDA or Vulkan when the machine has them) load at run time
 // from beside the helper (`LlamaEmbedder`), so one build runs anywhere. Dev builds find them in Vendor/.
+#if os(Windows)
+// No rpath on Windows: the DLLs go beside digup.exe, or on PATH in dev runs. MSVC's C++ runtime needs no
+// link line of its own, so the module map differs from Linux's by that.
+let runpath: [String] = []
+let llamaModule = "Sources/CLlamaWindows"
+#else
 let runpath = ["-Xlinker", "-rpath", "-Xlinker", "$ORIGIN",
                "-Xlinker", "-rpath", "-Xlinker", "\(vendor)/llama/lib",
                "-Xlinker", "-rpath", "-Xlinker", "\(vendor)/pdfium/lib"]
 let llamaModule = "Sources/CLlamaShared"
+#endif
 let llamaLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/llama/lib"] + runpath)]
 let engineDependencies: [Target.Dependency] = ["CSQLite", "CStb", "CMiniz", "CPDFium"]
 let engineLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/pdfium/lib"] + runpath)]
@@ -29,8 +36,12 @@ let portableTargets: [Target] = [
         .define("SQLITE_ENABLE_FTS5"), .define("SQLITE_THREADSAFE", to: "1"), .define("SQLITE_DQS", to: "0"),
         .define("SQLITE_OMIT_LOAD_EXTENSION"), .unsafeFlags(["-w"]),
     ]),
-    // Image decoding, resizing and PNG/JPEG writing (stb_image, stb_image_resize2, stb_image_write).
-    .target(name: "CStb", path: "Vendor/stb", cSettings: [.unsafeFlags(["-w"])]),
+    // Image decoding, resizing and PNG/JPEG writing (stb_image, stb_image_resize2, stb_image_write). On Windows its file
+    // names are UTF-8, opened through the wide-character calls (else a Bengali or Arabic name won't open).
+    .target(name: "CStb", path: "Vendor/stb", cSettings: [
+        .define("STBI_WINDOWS_UTF8", .when(platforms: [.windows])),
+        .define("STBIW_WINDOWS_UTF8", .when(platforms: [.windows])), .unsafeFlags(["-w"]),
+    ]),
     // Zip reading, for docx and odt.
     .target(name: "CMiniz", path: "Vendor/miniz", cSettings: [.unsafeFlags(["-w"])]),
     // PDF text and page rendering (Chromium's PDFium, prebuilt).

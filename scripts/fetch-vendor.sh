@@ -2,7 +2,7 @@
 # Linux and Windows: the C libraries the engine needs where Apple's frameworks aren't there, at pinned versions, laid out
 # in Vendor/ (out of git) as Package.swift expects: SQLite with FTS5 (storage), stb (images), miniz (docx/odt), PDFium
 # (PDF text and page renders; prebuilt by bblanchon/pdfium-binaries). macOS needs none of this. Does nothing when the
-# pinned set is already there. Needs curl, tar and python3 (to unzip).
+# pinned set is already there. Needs curl, tar and python3 (to unzip); on Windows, Git for Windows' bash.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SQLITE_ZIP=2026/sqlite-amalgamation-3540000.zip       # SQLite 3.54.0
@@ -21,7 +21,10 @@ case "$(uname -s)-$(uname -m)" in
 esac
 T=Vendor/fetch-tmp
 rm -rf "$T" && mkdir -p "$T"
-unzip_py() { python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2"; }
+# On Windows "python3" can be the Microsoft Store's stub, which only opens the Store.
+PYTHON=python3
+python3 -c 'import zipfile' 2>/dev/null || PYTHON=python
+unzip_py() { "$PYTHON" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2"; }
 
 echo "SQLite ($SQLITE_ZIP)"
 curl -sSL -o "$T/sqlite.zip" "https://sqlite.org/$SQLITE_ZIP"
@@ -53,6 +56,8 @@ cp "$T"/miniz/miniz.c Vendor/miniz/ && cp "$T"/miniz/*.h Vendor/miniz/include/
 echo "PDFium ($PDFIUM_TAG, $PDFIUM)"
 curl -sSL -o "$T/pdfium.tgz" "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG/\//%2F}/$PDFIUM.tgz"
 rm -rf Vendor/pdfium && mkdir -p Vendor/pdfium && tar -xzf "$T/pdfium.tgz" -C Vendor/pdfium
+# Windows: the DLL is in bin/, its import library is lib/pdfium.dll.lib; the module map links "pdfium".
+if [[ -f Vendor/pdfium/lib/pdfium.dll.lib ]]; then cp Vendor/pdfium/lib/pdfium.dll.lib Vendor/pdfium/lib/pdfium.lib; fi
 ls Vendor/pdfium/lib
 
 rm -rf "$T"

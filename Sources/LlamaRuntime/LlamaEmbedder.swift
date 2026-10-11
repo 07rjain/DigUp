@@ -191,7 +191,17 @@ public final class LlamaEmbedder: Embedder {
     /// Reads an image or audio file with mtmd's helpers (stb_image, miniaudio at 16 kHz), resizes images for `budget`
     /// and cuts audio at 30 s. The caller frees the bitmap.
     private func load(_ path: String, image: Bool, budget: Int) throws -> OpaquePointer {
+        #if os(Windows)
+        // mtmd opens a path with fopen, which on Windows reads it in the ANSI code page (a temp folder under a Bengali
+        // user name wouldn't open), so the bytes go in instead: its file variant reads them into a buffer the same way.
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let wrapper = bytes.withUnsafeBytes { buffer in
+            mtmd_helper_bitmap_init_from_buf(media, buffer.bindMemory(to: UInt8.self).baseAddress, buffer.count, false,
+                                             mtmd_helper_init_opt_default())
+        }
+        #else
         let wrapper = mtmd_helper_bitmap_init_from_file(media, path, false, mtmd_helper_init_opt_default())
+        #endif
         if let video = wrapper.video_ctx {
             if let bitmap = wrapper.bitmap { mtmd_bitmap_free(bitmap) }
             mtmd_helper_video_free(video)

@@ -3,10 +3,11 @@
 # libraries combined into Vendor/llama/lib/libllamacpp.a, with the headers in Vendor/llama/include (all out of git).
 # Metal shaders are embedded and compiled on first use, so no Metal toolchain is needed. CMake comes from PATH, or from
 # a venv in Vendor/ (needs uv). Does nothing when that build is already there; build.sh runs it every time.
-# On Linux it builds shared libraries instead, with ggml's backends as modules loaded at run time
-# (GGML_BACKEND_DL): the CPU variants always, CUDA when nvcc is found (CUDACXX, or on PATH; CUDA_ARCHS picks the GPU
+# On Linux and Windows it builds shared libraries instead, with ggml's backends as modules loaded at run
+# time (GGML_BACKEND_DL): the CPU variants always, CUDA when nvcc is found (CUDACXX, or on PATH; CUDA_ARCHS picks the GPU
 # architectures, default native), else Vulkan when its SDK is. LLAMA_SOURCE / LLAMA_BUILD point at an existing clone and
-# build folder.
+# build folder. On Windows it runs in Git for Windows' bash inside the MSVC environment (vcvars64) and
+# leaves DLLs with their import libraries.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TAG=b11461   # the first tags with EmbeddingGemma 2 (text + vision + audio) are b11452+
@@ -28,7 +29,8 @@ else
   FLAVOR=cpu
 fi
 STAMP="$TAG $(shasum -a 256 "$PATCH" 2>/dev/null | cut -c1-12 || sha256sum "$PATCH" | cut -c1-12) $FLAVOR"
-if [[ ( -f "$OUT/lib/libllamacpp.a" || -f "$OUT/lib/libllama.so" ) && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
+if [[ ( -f "$OUT/lib/libllamacpp.a" || -f "$OUT/lib/libllama.so" || -f "$OUT/lib/llama.dll" ) \
+      && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
   exit 0
 fi
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
@@ -36,7 +38,9 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
 fi
 
 if [[ ! -d "$SOURCE" ]]; then
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp "$SOURCE"
+  # Line endings as they are (Git for Windows would turn them into CRLF, and the patch wouldn't apply).
+  git -c advice.detachedHead=false -c core.autocrlf=false clone --quiet --depth 1 --branch "$TAG" \
+    https://github.com/ggml-org/llama.cpp "$SOURCE"
 elif [[ "$(git -C "$SOURCE" describe --tags --exact-match 2>/dev/null)" != "$TAG" ]]; then
   git -C "$SOURCE" fetch --quiet --depth 1 origin tag "$TAG"
   git -C "$SOURCE" checkout --quiet --force "$TAG"   # --force also drops the old patch
@@ -70,6 +74,9 @@ if [[ $OS == Darwin ]]; then
     $B/vendor/hash/libvendor-hash.a
 else
   GENERATOR=$(command -v ninja > /dev/null && echo Ninja || echo "Unix Makefiles")
+  if [[ $OS == MINGW* || $OS == MSYS* ]]; then
+    export CC=cl CXX=cl   # MSVC, not whatever else bash finds first
+  fi
   case $FLAVOR in
     cuda) GPU=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-native}") ;;
     vulkan) GPU=(-DGGML_VULKAN=ON) ;;
@@ -82,9 +89,16 @@ else
     -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF \
     -DLLAMA_CURL=OFF > /dev/null
   cmake --build "$BUILD" --config Release -j "$(nproc)" > /dev/null
-  # The libraries with their versioned names (the SONAMEs the helper links against) and the symlinks to them.
   rm -rf "$OUT/lib" && mkdir -p "$OUT/lib" "$OUT/include"
-  cp -a "$BUILD"/bin/*.so* "$OUT/lib/"
+  if [[ $OS == MINGW* || $OS == MSYS* ]]; then
+    # The DLLs (the backends among them), and the import libraries the helper links against.
+    cp "$BUILD"/bin/*.dll "$OUT/lib/"
+    find "$BUILD" \( -name llama.lib -o -name mtmd.lib -o -name ggml.lib -o -name ggml-base.lib \) \
+      -exec cp {} "$OUT/lib/" \;
+  else
+    # The libraries with their versioned names (the SONAMEs the helper links against) and the symlinks to them.
+    cp -a "$BUILD"/bin/*.so* "$OUT/lib/"
+  fi
 fi
 cp "$SOURCE/include/llama.h" "$SOURCE"/ggml/include/*.h "$SOURCE/tools/mtmd/mtmd.h" "$SOURCE/tools/mtmd/mtmd-helper.h" \
   "$OUT/include/"

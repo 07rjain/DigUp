@@ -26,7 +26,7 @@ import Testing
     func write(_ path: String, _ text: String) throws -> URL {
         let url = folder.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try text.write(to: url, atomically: true, encoding: .utf8)
+        try text.write(to: url, atomically: false, encoding: .utf8)   // a rename right after a write can meet Windows' virus scan
         return url
     }
 
