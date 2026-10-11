@@ -1,5 +1,3 @@
-import CoreGraphics
-import CoreServices
 import Foundation
 
 /// Seconds of indexing per unit, measured 2026-10-07 on an M4 Pro with llama.cpp (Q8_0), reading files while the
@@ -128,20 +126,5 @@ public enum Estimator {
             groups[key, default: []].append(file)
         }
         return groups.mapValues { estimate($0, options: options, costs: costs) }
-    }
-
-    static func pages(of path: String) -> Int {
-        if let pages = spotlight(path, kMDItemNumberOfPages), pages > 0 { return Int(pages) }
-        return CGPDFDocument(URL(fileURLWithPath: path) as CFURL)?.numberOfPages ?? 1
-    }
-
-    static func duration(of path: String) -> Double {
-        if let seconds = spotlight(path, kMDItemDurationSeconds), seconds > 0 { return seconds }
-        return MediaInfo.duration(of: URL(fileURLWithPath: path)) ?? 0
-    }
-
-    private static func spotlight(_ path: String, _ attribute: CFString) -> Double? {
-        guard let item = MDItemCreate(kCFAllocatorDefault, path as CFString) else { return nil }
-        return (MDItemCopyAttribute(item, attribute) as? NSNumber)?.doubleValue
     }
 }

@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 
 public struct SearchHit: Sendable {
@@ -294,8 +293,8 @@ public final class Searcher {
                     Vectors.floats(fromHalf: matrix.halves + row * Vectors.dimension, count: count * Vectors.dimension,
                                    to: matrix.block)
                     // (count × 768) · (768 × 1)
-                    vDSP_mmul(matrix.block, 1, query.baseAddress!, 1, scores.baseAddress! + row, 1,
-                              vDSP_Length(count), 1, vDSP_Length(Vectors.dimension))
+                    Vectors.scores(of: matrix.block, count: count, query: query.baseAddress!,
+                                   into: scores.baseAddress! + row)
                     row += count
                 }
             }

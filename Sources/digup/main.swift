@@ -21,7 +21,7 @@ let usage = """
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
+      --index DIR          index folder (default: DigUp's Application Support folder; see `digup status`)
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
@@ -77,8 +77,8 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUp/index.noindex")
-            as NSString).expandingTildeInPath).standardizedFileURL
+        guard let chosen = values["--index"] else { return AppPaths.defaultIndex.standardizedFileURL }
+        return URL(fileURLWithPath: (chosen as NSString).expandingTildeInPath).standardizedFileURL
     }
 
     /// `--code`: the code index, not the main one.

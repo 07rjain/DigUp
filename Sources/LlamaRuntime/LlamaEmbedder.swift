@@ -300,8 +300,30 @@ public final class LlamaEmbedder: Embedder {
     private static let backend: Void = {
         llama_log_set(LlamaLog.callback, LlamaLog.userData)
         mtmd_helper_log_set(LlamaLog.callback, LlamaLog.userData)
+        #if !os(macOS)
+        loadBackends()
+        #endif
         llama_backend_init()
     }()
+
+    #if !os(macOS)
+    /// On Linux and Windows ggml's backends are shared libraries (GGML_BACKEND_DL, scripts/build-llama.sh): the CPU
+    /// variants always, CUDA or Vulkan when the machine has them. They're looked for in $DIGUP_BACKENDS, then beside this
+    /// executable, then wherever ggml itself looks; whatever loads and works is what the model runs on.
+    private static func loadBackends() {
+        let environment = ProcessInfo.processInfo.environment
+        var folders: [String] = []
+        if let chosen = environment["DIGUP_BACKENDS"], !chosen.isEmpty { folders.append(chosen) }
+        if let executable = Bundle.main.executableURL { folders.append(executable.deletingLastPathComponent().path) }
+        for folder in folders where ggml_backend_dev_count() == 0 {
+            ggml_backend_load_all_from_path(folder)
+        }
+        if ggml_backend_dev_count() == 0 { ggml_backend_load_all() }
+        LlamaLog.shared.line("backends: " + (0..<ggml_backend_reg_count()).map {
+            String(cString: ggml_backend_reg_name(ggml_backend_reg_get($0)))
+        }.joined(separator: ", "))
+    }
+    #endif
 }
 
 /// A problem with one input (it gets no vector; its neighbours go on).
