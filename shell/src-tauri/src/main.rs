@@ -188,7 +188,10 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     app.manage(shell.clone());
 
     make_panel(&handle)?;
-    make_tray(&handle, &shell)?;
+    // No tray (a session without a taskbar, a Linux desktop without one): the hotkey and the panel still work.
+    if let Err(error) = make_tray(&handle, &shell) {
+        eprintln!("digup-shell: no tray icon: {error}");
+    }
     if let Err(error) = app.global_shortcut().register(shell.options.hotkey.as_str()) {
         set_status(&handle, &format!("The shortcut {} is taken", shell.options.hotkey));
         eprintln!("digup-shell: can't use {} as the shortcut: {error}", shell.options.hotkey);
