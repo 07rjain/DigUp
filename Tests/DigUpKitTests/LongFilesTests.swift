@@ -1,6 +1,3 @@
-// These tests draw their PDFs with AppKit; on Linux and Windows they wait for a PDF writer of their own.
-#if canImport(AppKit)
-import AppKit
 import Foundation
 import Testing
 @testable import DigUpKit
@@ -263,20 +260,9 @@ import Testing
     func makePDF(_ name: String, pages: Int, special: [Int: String] = [:]) throws -> URL {
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
         let url = files.appendingPathComponent(name)
-        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let context = try #require(CGContext(url as CFURL, mediaBox: &box, nil))
-        for page in 1...pages {
-            context.beginPDFPage(nil)
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-            let text = "Page \(page). " + prose(characters: 600, seed: page)
-                + (special[page].map { " The \($0) lives here." } ?? "")
-            (text as NSString).draw(in: CGRect(x: 60, y: 60, width: 492, height: 660),
-                                    withAttributes: [.font: NSFont.systemFont(ofSize: 12)])
-            NSGraphicsContext.restoreGraphicsState()
-            context.endPDFPage()
-        }
-        context.closePDF()
+        try TextPDF.write((1...pages).map {
+            "Page \($0). " + prose(characters: 600, seed: $0) + (special[$0].map { " The \($0) lives here." } ?? "")
+        }, to: url)
         return url
     }
 
@@ -298,4 +284,3 @@ import Testing
         return pieces.joined(separator: " ")
     }
 }
-#endif
