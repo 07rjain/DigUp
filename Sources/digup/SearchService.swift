@@ -14,6 +14,11 @@ import Foundation
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
+///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n} → {"image":path}: a JPEG for a preview or a
+///                                               thumbnail (a PDF's page `loc`, a video's frame at `loc` seconds, or a
+///                                               picture a web view can't show, such as HEIC), made beside the requests
+///                                               (typing never waits on one) and kept in <index>/previews until the
+///                                               next start
 ///   {"op":"reload"}                           → {"ok":true,"vectors":n,"code_vectors":n}: after indexing changed the index
 ///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
@@ -38,6 +43,11 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var warnedAboutSource = false
     private let lock = NSLock()
     private let output = NSLock()
+    /// Renders for previews: two at a time, beside the request loop, each made once per file version.
+    private let previews: URL
+    private var rendered: [String: String] = [:]
+    private let renderLock = NSLock()
+    private let renderSlots = DispatchSemaphore(value: 2)
 
     init(index: URL, roots: [String], skipped: [String], types: Set<String>, codeRoots: [String],
          codeSkipped: [String], idleSeconds: Double) throws {
@@ -51,6 +61,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         self.codeSkipped = codeSkipped
         self.idleSeconds = idleSeconds
         log = index.appendingPathComponent("worker-query.log")
+        previews = index.appendingPathComponent("previews")
+        try? FileManager.default.removeItem(at: previews)
+        try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true)
         try openCode()
     }
 
@@ -75,6 +88,20 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                     write(["id": id, "ok": true])
                     lock.withLock { stopEncoder() }
                     return 0
+                }
+                if op == "render" {
+                    renderSlots.wait()
+                    let request = UncheckedSendable(request)
+                    Thread.detachNewThread { [self] in
+                        defer { renderSlots.signal() }
+                        var reply: [String: Any]
+                        do { reply = try render(request.value) } catch {
+                            reply = ["ok": false, "error": String("\(error)".prefix(500))]
+                        }
+                        reply["id"] = request.value["id"] ?? NSNull()
+                        write(reply)
+                    }
+                    continue
                 }
                 reply = try lock.withLock { try handle(op, request) }
             } catch {
@@ -176,6 +203,25 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         output.withLock { emit(fields) }
     }
 
+    // MARK: Previews
+
+    private func render(_ request: [String: Any]) throws -> [String: Any] {
+        guard let path = request["path"] as? String else { throw CLIError("which file?") }
+        let kind = request["kind"] as? String ?? "image"
+        let loc = (request["loc"] as? NSNumber)?.doubleValue
+        let pixels = min(max(request["pixels"] as? Int ?? 1024, 32), 2048)
+        let modified = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?
+            .timeIntervalSince1970 ?? 0
+        let key = "\(path)|\(modified)|\(kind)|\(loc ?? -1)|\(pixels)"
+        if let done = renderLock.withLock({ rendered[key] }), FileManager.default.fileExists(atPath: done) {
+            return ["image": done]
+        }
+        let image = try PreviewImages.make(PreviewImages.Kind(rawValue: kind) ?? .image, of: path, at: loc,
+                                           pixels: pixels, in: previews)
+        renderLock.withLock { rendered[key] = image }
+        return ["image": image]
+    }
+
     // MARK: The query encoder
 
     /// The query's vector (cached), or nil when the encoder can't run: keyword results still work.
@@ -236,6 +282,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             }
         }
     }
+}
+
+/// A value handed to another thread that only that thread uses from then on.
+private struct UncheckedSendable<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }
 
 /// A hit as JSON: what `digup search --json` prints, plus what a shell's preview needs.

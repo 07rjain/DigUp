@@ -103,6 +103,22 @@ extension PDFExtractor {
     }
 }
 
+extension PDFExtractor {
+    /// Page `number` (from 1) as a JPEG for a preview, fitted into a square of `pixels`.
+    static func renderPage(_ number: Int, of url: URL, pixels: Int, to out: URL) throws {
+        try PDFium.withDocument(url) { document in
+            guard let page = FPDF_LoadPage(document, Int32(number - 1)) else {
+                throw ExtractError.unreadable("no page \(number)")
+            }
+            defer { FPDF_ClosePage(page) }
+            guard let image = PDFium.render(page, pixels: pixels) else {
+                throw ExtractError.unreadable("can't render page \(number)")
+            }
+            try image.write(to: out, png: false)
+        }
+    }
+}
+
 extension Estimator {
     static func pages(of path: String) -> Int {
         (try? PDFium.withDocument(URL(fileURLWithPath: path)) { Int(FPDF_GetPageCount($0)) }) ?? 1

@@ -122,6 +122,15 @@ extension PDFExtractor {
         return (pages, document.pageCount, title)
     }
 
+    /// Page `number` (from 1) as a JPEG for a preview, fitted into a square of `pixels`.
+    static func renderPage(_ number: Int, of url: URL, pixels: Int, to out: URL) throws {
+        guard let document = PDFDocument(url: url) else { throw ExtractError.unreadable("can't open PDF") }
+        if document.isLocked { throw ExtractError.locked }
+        guard let page = document.page(at: number - 1), let image = render(page, pixels: pixels)
+        else { throw ExtractError.unreadable("no page \(number)") }
+        try ImageExtractor.write(image, to: out, png: false)
+    }
+
     /// The page as a picture, fitted into a square of `pixels`.
     static func render(_ page: PDFPage, pixels: Int) -> CGImage? {
         let side = CGFloat(pixels)

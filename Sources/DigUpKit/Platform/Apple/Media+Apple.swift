@@ -95,6 +95,17 @@ extension VideoExtractor {
         return (frames, duration, hasAudio)
     }
 
+    /// The frame shown at `seconds`, its long side at most `pixels`, as a JPEG for a preview.
+    static func frame(at seconds: Double, of url: URL, pixels: Int, to out: URL) async throws {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: pixels, height: pixels)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let (image, _) = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))
+        try ImageExtractor.write(image, to: out, png: false)
+    }
+
     static func averageHash(_ image: CGImage) -> UInt64 {
         let side = 8
         var pixels = [UInt8](repeating: 0, count: side * side)

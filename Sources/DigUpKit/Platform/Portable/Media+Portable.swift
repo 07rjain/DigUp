@@ -155,5 +155,16 @@ extension VideoExtractor {
         for index in frames.indices.dropLast() { frames[index].end = frames[index + 1].start }
         return (frames, duration, streams.audio)
     }
+
+    /// The frame shown at `seconds`, its long side at most `pixels`, as a JPEG for a preview.
+    static func frame(at seconds: Double, of url: URL, pixels: Int, to out: URL) async throws {
+        try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-ss", String(max(0, seconds)), "-i", url.path,
+                                       "-frames:v", "1", "-vf",
+                                       "scale='min(iw,\(pixels))':'min(ih,\(pixels))':force_original_aspect_ratio=decrease",
+                                       "-q:v", "3", "-y", out.path]) { _ in }
+        guard FileManager.default.fileExists(atPath: out.path) else {
+            throw ExtractError.unreadable("no frame at \(seconds) s")
+        }
+    }
 }
 #endif
