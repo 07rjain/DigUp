@@ -7,8 +7,8 @@ import Glibc
 #endif
 
 extension Rules {
-    /// What macOS gets from the type system, as extension sets. Pictures stb can't decode yet (HEIC, WebP, TIFF, RAW)
-    /// are still images here: they fail with a note that says so, rather than vanish.
+    /// What macOS gets from the type system, as extension sets. RAW pictures, which nothing here decodes yet, are still
+    /// images: they fail with a note that says so, rather than vanish.
     static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif", "avif", "psd", "tga",
         "pnm", "ppm", "pgm", "cr2", "nef", "arw", "dng", "raf", "orf", "rw2",
