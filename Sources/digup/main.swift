@@ -19,6 +19,9 @@ let usage = """
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                                               the app's indexing helper (JSON lines; see IndexService)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
+      digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
+                                              the searcher as a process, index open and encoder warm (JSON lines;
+                                              see SearchService): for shells that can't link DigUpKit
 
     Options:
       --index DIR          index folder (default: DigUp's Application Support folder; see `digup status`)
@@ -51,7 +54,7 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch"]
+                                      "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -347,18 +350,7 @@ func search(_ args: Arguments) throws {
                                    wordWeight: args.wordWeight)
     let searched = Date()
     if args.flags.contains("--json") {
-        let rows: [[String: Any]] = hits.map { hit in
-            var row: [String: Any] = ["path": hit.path, "kind": hit.kind.rawValue, "segment": hit.segment.rawValue,
-                                      "score": hit.score]
-            if let z = hit.z { row["z"] = z }
-            if let cosine = hit.cosine { row["cosine"] = cosine }
-            if let rank = hit.keywordRank { row["keyword_rank"] = rank }
-            if let loc = hit.loc { row["loc"] = loc }
-            if let end = hit.locEnd { row["loc_end"] = end }
-            if let focus = hit.focus { row["focus"] = focus }
-            if let excerpt = hit.excerpt { row["excerpt"] = excerpt }
-            return row
-        }
+        let rows = hits.map(hitFields)
         let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
         print(String(data: data, encoding: .utf8) ?? "[]")
         return
@@ -534,6 +526,7 @@ do {
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))
+    case "search-service": exit(try searchService(args))
     default:
         print(usage)
         exit(2)
