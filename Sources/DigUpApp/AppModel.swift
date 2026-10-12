@@ -92,6 +92,11 @@ final class AppModel {
         let waiting = code.pending > 0 ? " · \(code.pending.formatted()) waiting" : ""
         if code.pending > 0, status.paused { return "Paused · \(code.pending.formatted()) code files waiting" }
         if code.pending > 0, let reason = status.waitingFor { return "\(code.pending.formatted()) code files waiting · \(reason)" }
+        // Code is read once the other folders have nothing waiting (the helper's order).
+        if code.pending > 0, status.pending > 0 {
+            let files = "\(code.pending.formatted()) code \(code.pending == 1 ? "file" : "files")"
+            return files + " waiting · read after your other files"
+        }
         return "\(code.searchable.formatted()) code \(code.searchable == 1 ? "file" : "files") indexed" + waiting
     }
 

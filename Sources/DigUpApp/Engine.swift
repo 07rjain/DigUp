@@ -49,6 +49,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
         var indexing: Progress?
         /// Code folders that aren't there right now (an unplugged drive): skipped, and their files kept.
         var missingRoots: [String] = []
+        /// Code folders macOS doesn't let DigUp read: skipped, files kept.
+        var unreadableRoots: [String] = []
     }
 
     struct Progress: Sendable, Equatable {
@@ -519,6 +521,7 @@ nonisolated final class Engine: @unchecked Sendable {
             $0.missingRoots = []
             $0.unreadableRoots = []
             $0.code.missingRoots = []
+            $0.code.unreadableRoots = []
         }
         log("indexer: started (pid \(process.processIdentifier))")
     }
@@ -610,7 +613,8 @@ nonisolated final class Engine: @unchecked Sendable {
         switch event["event"] as? String {
         case "sync":
             applyCounts(event)
-            if int("new") > 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
+            // New code is read right away only when the main index has nothing waiting; else it waits its turn.
+            if int("new") > 0, int("pending") == 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
             log("code sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
@@ -624,8 +628,13 @@ nonisolated final class Engine: @unchecked Sendable {
             refreshCodeSearcher(force: true)
         case "missing":
             let folders = event["folders"] as? [String] ?? []
-            update { $0.code.missingRoots = folders + (event["unreadable"] as? [String] ?? []) }
+            let unreadable = event["unreadable"] as? [String] ?? []
+            update {
+                $0.code.missingRoots = folders
+                $0.code.unreadableRoots = unreadable
+            }
             if !folders.isEmpty { log("indexer: code folders not connected: \(folders.map(tildePath))") }
+            if !unreadable.isEmpty { log("indexer: no access to code folders: \(unreadable.map(tildePath))") }
         case "pruned":
             log("indexer: \(int("files")) files under code folders no longer chosen left the code index")
         case "reindex":
@@ -819,7 +828,7 @@ nonisolated final class Engine: @unchecked Sendable {
     func rootSummaries(code: Bool = false) async -> [RootSummary] {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
-                let unreadable = Set(lock.withLock { code ? [] : status.unreadableRoots })
+                let unreadable = Set(lock.withLock { code ? status.code.unreadableRoots : status.unreadableRoots })
                 let store = code ? codeStore : searchStore
                 let summaries = lock.withLock { code ? codeRoots : roots }.map { root -> RootSummary in
                     var summary = RootSummary(path: root.path, missing: !AppSettings.isFolder(root),

@@ -44,7 +44,8 @@ import SwiftUI
 ///                             settings:general|folders|code|storage, settings:add (Folders with Add Folders open),
 ///                             settings:addcode (Code with its folders' sheet open),
 ///                             onboarding:welcome|folders|code|shortcut|ready
-///                             (-debugCloseWindow YES closes it afterwards, to measure what closing gives back)
+///                             (-debugCloseWindow YES closes it afterwards, to measure what closing gives back;
+///                             -debugWindowAfter S opens it S seconds after launch, once the helper has reported)
 ///     -debugChoices "open:real;click:real/videos;add:<path>"   before the snapshot, act on the folder list of
 ///                             onboarding's folder step or of Add Folders, then log what it would apply. Actions,
 ///                             `;`-separated: open:NAME (show a folder's subfolders), click:NAME (a folder's
@@ -291,7 +292,7 @@ enum DebugHooks {
         let defaults = UserDefaults.standard
         let started = Date()
         let parts = page.split(separator: ":").map(String.init)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5 + defaults.double(forKey: "debugWindowAfter")) {
             let loaded: () -> Bool
             let draw: (URL) throws -> Void
             let close: () -> Void

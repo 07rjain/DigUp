@@ -17,10 +17,10 @@ import WinSDK
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
 /// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
-/// "sync code"); then the rest of long files (`Indexer.finishLongFiles`) under the same rules. Between batches it
-/// yields to stop and to "backfill off" at once, and to a new sync once indexing has had about as long as the last
-/// sync took (`yieldAt`). When it's done it keeps a warm worker for `linger` seconds (screenshots come in bursts),
-/// then exits.
+/// "sync code"; its folders are crawled with the first sync, so their counts show at once); then the rest of long
+/// files (`Indexer.finishLongFiles`) under the same rules. Between batches it yields to stop and to "backfill off" at
+/// once, and to a new sync once indexing has had about as long as the last sync took (`yieldAt`). When it's done it
+/// keeps a warm worker for `linger` seconds (screenshots come in bursts), then exits.
 ///
 /// Before the model has downloaded it only syncs (file names are searchable at once), says it's "waiting", and exits.
 /// Folders that aren't there (an unplugged drive) or can't be read are skipped, and what was indexed from them stays.
@@ -88,9 +88,18 @@ final class IndexService: @unchecked Sendable {
         }
         Thread.detachNewThread { [self] in readCommands() }
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
+        var codeCounted = code == nil
         while true {
             if lock.withLock({ () -> Bool in defer { syncRequested = false }; return syncRequested }) {
                 sync(main, into: &newFiles)
+            }
+            // The code folders are crawled with the first sync, so their counts show from the start (a big first pass
+            // of the main index takes hours); their files are read once the main index has nothing waiting, below.
+            if !codeCounted, let code {
+                codeCounted = true
+                if lock.withLock({ () -> Bool in defer { codeSyncRequested = false }; return codeSyncRequested }) {
+                    sync(code, into: &newCode)
+                }
             }
             if lock.withLock({ stopRequested }) { break }
             guard modelReady() else {
