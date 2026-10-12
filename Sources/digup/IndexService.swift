@@ -84,6 +84,8 @@ final class IndexService: @unchecked Sendable {
                     emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code])
                 }
             }
+            let scans = try main.store.readScansAgainOnce()   // OCR for scanned pages, which older indexes lack
+            if scans > 0 { emit(["event": "rescan", "files": scans]) }
             for part in parts {
                 try part.indexer.checkModel()   // a new model: everything is queued again
                 if let keepOnly = part.keepOnly {

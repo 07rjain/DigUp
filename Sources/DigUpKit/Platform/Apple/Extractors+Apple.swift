@@ -49,6 +49,9 @@ extension ImageExtractor {
 }
 
 extension OCR {
+    /// Text recognition runs here (Vision).
+    static let isAvailable = true
+
     /// Apple Vision text recognition: ~0.1 s for a 1440×900 screenshot on an M4 Pro.
     /// Runs on the full-resolution image; small UI text is what screenshots are full of.
     /// Accurate beats fast here: fast saved only 8% of screenshot indexing time once OCR overlapped with embedding,
@@ -116,7 +119,15 @@ extension PDFExtractor {
             guard let image = render(page, pixels: renderPixels) else { continue }
             let out = folder.appendingPathComponent(UUID().uuidString + ".png")
             try ImageExtractor.write(image, to: out, png: true)
-            pages.append(Page(number: index + 1, text: text, imagePath: out.path, garbled: garbled))
+            // A scan, or a page that's mostly a picture: its words come from OCR, for keyword search only (an invoice
+            // number on a scan, as on a screenshot), and its meaning stays the picture's vector. Not for a text layer
+            // that came out in glyph order (Bengali), which OCR can't read either.
+            var ocr = false
+            if garbled == nil {
+                let read = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
+                if read.count > text.count { (text, ocr) = (read, true) }
+            }
+            pages.append(Page(number: index + 1, text: text, imagePath: out.path, ocr: ocr, garbled: garbled))
         }
         let title = document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String
         return (pages, document.pageCount, title)

@@ -383,6 +383,21 @@ public final class IndexStore {
                    [.text(state), .optional(detail), .optional(json), .double(Date().timeIntervalSince1970), .int(id)])
     }
 
+    /// PDFs with pages read as pictures (scans), read once more, since such pages get their words from OCR now: an
+    /// index made before that has none for them. Once per index (`meta` "scans_ocr"), and only where there's OCR; the
+    /// schema stays as it was, so an older DigUp still opens the index. Returns how many PDFs.
+    @discardableResult
+    public func readScansAgainOnce() throws -> Int {
+        guard OCR.isAvailable, try meta("scans_ocr") == nil else { return 0 }
+        var files: [Int64] = []
+        try db.query("SELECT DISTINCT file FROM segments WHERE kind = 'page_image'") { files.append($0.int(0)) }
+        try db.transaction {
+            for file in files { try requeue(file) }
+            try setMeta("scans_ocr", "1")
+        }
+        return files.count
+    }
+
     /// A file the indexing helper had to stop on (reading it ran away): it isn't read again until it changes. A long
     /// file that was being finished keeps what was read of it. False when no file has that path.
     @discardableResult

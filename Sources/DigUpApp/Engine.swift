@@ -628,6 +628,8 @@ nonisolated final class Engine: @unchecked Sendable {
             if !unreadable.isEmpty { log("indexer: no access: \(unreadable.map(tildePath))") }
         case "stopped":
             log("indexer: skipped \(tildePath(event["path"] as? String ?? "?")): it \(event["why"] as? String ?? "")")
+        case "rescan":
+            log("indexer: reading \(int("files")) PDFs with scanned pages again, for their words")
         case "pruned":
             log("indexer: \(int("files")) files under folders no longer chosen left the index")
         case "reindex":

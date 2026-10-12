@@ -253,6 +253,28 @@ import Testing
         #expect(abs((hits.first?.cosine ?? 0) - 1) < 0.002)   // float16 rounding only
     }
 
+    #if canImport(Vision)
+    @Test func aScannedPagesWordsAreFoundByKeywordSearch() throws {
+        // A page that's only a picture of its text, as a scanner or a phone makes it: no text layer at all.
+        try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        try ScannedPDF.write("Invoice QXTEST87231. Payment due Friday.", to: files.appendingPathComponent("scan.pdf"))
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        _ = try indexer.sync([files])
+        _ = try indexer.run()
+        #expect(try found(store, "qxtest87231") == [1])   // OCR's words, for keyword search; its meaning stays the picture's
+        var kinds: [String] = []
+        try store.db.query("SELECT kind FROM segments WHERE kind != 'name'") { kinds.append($0.text(0) ?? "") }
+        #expect(kinds == ["page_image"])
+
+        // An index made before scans had words reads them once more, and only once.
+        try store.setMeta("scans_ocr", nil)
+        #expect(try store.readScansAgainOnce() == 1)
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.readScansAgainOnce() == 0)
+    }
+    #endif
+
     // MARK: Files
 
     /// A text PDF with `pages` pages of a few sentences each; `special` puts a word on a page (from 1).

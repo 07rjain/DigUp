@@ -48,3 +48,32 @@ enum TextPDF {
             .replacingOccurrences(of: ")", with: "\\)")
     }
 }
+
+#if canImport(Vision)
+import CoreGraphics
+import CoreText
+
+/// A PDF whose one page is a picture of `text` and nothing else, as a scanner makes it (macOS: the scans' OCR).
+enum ScannedPDF {
+    static func write(_ text: String, to url: URL) throws {
+        let width = 1240, height = 1754   // A4 at 150 dpi
+        guard let bitmap = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                     space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+        else { throw CocoaError(.fileWriteUnknown) }
+        bitmap.setFillColor(gray: 1, alpha: 1)
+        bitmap.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 36, nil),
+        ]))
+        bitmap.textPosition = CGPoint(x: 100, y: height - 200)
+        CTLineDraw(line, bitmap)
+        guard let image = bitmap.makeImage() else { throw CocoaError(.fileWriteUnknown) }
+        var page = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let pdf = CGContext(url as CFURL, mediaBox: &page, nil) else { throw CocoaError(.fileWriteUnknown) }
+        pdf.beginPDFPage(nil)
+        pdf.draw(image, in: page)
+        pdf.endPDFPage()
+        pdf.closePDF()
+    }
+}
+#endif
