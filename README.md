@@ -163,6 +163,11 @@ spaces, like Chinese, Japanese and Thai, aren't split into words.
 model and the indexes. Its settings are in `~/Library/Preferences/com.abdurrahim.DigUp.plist`. With Homebrew,
 `brew uninstall --cask --zap digup` removes all of it.
 
+## Support
+
+DigUp is free and open source, and it stays that way. If it helps you and you'd like to support it, you can
+[buy me a coffee](https://arahim3.gumroad.com/l/support).
+
 ## Thanks
 
 DigUp is built on [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) by Google DeepMind (Apache 2.0),
