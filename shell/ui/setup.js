@@ -162,11 +162,13 @@ function showKeys(hotkey) {
   $("reveal-text").textContent = isMac ? "shows it in Finder" : isWindows ? "shows it in Explorer" : "shows it in its folder";
 }
 
-/// Where the shortcut lives on a desktop that keeps it itself (GNOME), or the command to give it (other Wayland desktops).
+/// Where the shortcut lives on a desktop that keeps it itself (GNOME, KDE), or the command to give it (other Wayland
+/// desktops).
 function showShortcut(shortcut) {
   const notes = {
     gnome: "DigUp adds it to GNOME's keyboard shortcuts. To change it later: Settings → Keyboard → View and Customize " +
       "Shortcuts → Custom Shortcuts.",
+    kde: "DigUp adds it to KDE's shortcuts. To change it later: System Settings → Shortcuts → DigUp.",
     by_hand: "This desktop doesn't let apps set their own shortcuts. To open the panel with one, add a shortcut in " +
       "its keyboard settings that runs:",
   };

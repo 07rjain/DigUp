@@ -73,13 +73,21 @@ impl Shell {
         self.options.hotkey.clone().unwrap_or(if chosen.is_empty() { DEFAULT_HOTKEY.to_string() } else { chosen })
     }
 
-    /// The shortcut as people read it: GNOME's, once DigUp's custom shortcut is there (it may have been changed there).
+    /// The shortcut as people read it: the desktop's, once DigUp's is there (it may have been changed there).
     fn hotkey_text(&self) -> String {
         #[cfg(target_os = "linux")]
-        if self.shortcut == Method::Gnome {
-            if let Some(binding) = hotkey::gnome::binding() {
-                return hotkey::gnome::shown(&binding);
+        match self.shortcut {
+            Method::Gnome => {
+                if let Some(binding) = hotkey::gnome::binding() {
+                    return hotkey::gnome::shown(&binding);
+                }
             }
+            Method::Kde => {
+                if let Some(key) = hotkey::kde::current() {
+                    return key;
+                }
+            }
+            _ => {}
         }
         shortcut_text(&self.hotkey())
     }
@@ -313,7 +321,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
     app.run(|app, event| match event {
-        tauri::RunEvent::Exit => stop_helpers(app),
+        tauri::RunEvent::Exit => {
+            stop_helpers(app);
+            #[cfg(target_os = "linux")]
+            if app.state::<Arc<Shell>>().shortcut == Method::Kde {
+                hotkey::kde::stop();
+            }
+        }
         // Closing the setup window isn't quitting: DigUp lives in the tray.
         tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         _ => {}
@@ -402,6 +416,15 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         // GNOME runs DigUp's custom shortcut (added at setup); its command follows DigUp when DigUp moves.
         #[cfg(target_os = "linux")]
         Method::Gnome if shell.is_set_up() => hotkey::gnome::refresh(&hotkey::toggle_command()),
+        // KDE signals DigUp while it runs.
+        #[cfg(target_os = "linux")]
+        Method::Kde => {
+            let pressed = handle.clone();
+            if let Err(error) = hotkey::kde::listen(&shell.hotkey(), move || toggle_panel(&pressed)) {
+                set_status(&handle, &format!("The shortcut couldn't be added to KDE's settings: {error}"));
+                eprintln!("digup-shell: can't add the shortcut to KDE's: {error}");
+            }
+        }
         _ => {}
     }
 

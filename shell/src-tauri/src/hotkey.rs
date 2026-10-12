@@ -1,8 +1,9 @@
 //! The panel's shortcut. Windows, macOS and X11 desktops let an app grab a key combination for itself (Tauri's global
-//! shortcut). Wayland doesn't let any app do that: there a shortcut of the desktop's own runs `DigUp --toggle`, which
-//! asks the DigUp already running to show or hide the panel. On GNOME (Wayland or X11) DigUp adds that shortcut itself,
-//! as a custom shortcut in GNOME's keyboard settings, where the person can change or remove it; on other Wayland
-//! desktops the person adds the command to their desktop's shortcuts.
+//! shortcut). Wayland doesn't let any app do that, so DigUp puts its shortcut where the desktop keeps them, where the
+//! person can change or remove it: on GNOME (Wayland or X11) a custom shortcut in its keyboard settings that runs
+//! `DigUp --toggle`, which asks the DigUp already running to show or hide the panel; on KDE an action in its global
+//! shortcuts (KGlobalAccel), which signals DigUp while it runs. On other Wayland desktops the person adds a shortcut that
+//! runs the command.
 
 use std::path::PathBuf;
 
@@ -14,6 +15,8 @@ pub enum Method {
     Grab,
     /// A custom shortcut in GNOME's keyboard settings runs `--toggle`.
     Gnome,
+    /// KDE's global shortcuts signal DigUp.
+    Kde,
     /// The desktop lets no app set a shortcut: the person adds one that runs `--toggle`.
     ByHand,
 }
@@ -23,6 +26,7 @@ impl Method {
         match self {
             Method::Grab => "grab",
             Method::Gnome => "gnome",
+            Method::Kde => "kde",
             Method::ByHand => "by_hand",
         }
     }
@@ -33,6 +37,9 @@ pub fn method() -> Method {
     {
         if gnome::available() {
             return Method::Gnome;
+        }
+        if kde::available() {
+            return Method::Kde;
         }
         let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty())
             || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland");
@@ -188,6 +195,148 @@ pub mod gnome {
         }
         let mut key = rest.chars();
         parts.push(key.next().map(|first| first.to_uppercase().chain(key).collect()).unwrap_or_default());
+        parts.join("+")
+    }
+}
+
+/// KDE's global shortcuts (System Settings → Shortcuts), which KDE's own apps register through KGlobalAccel: DigUp's
+/// component there has one action, the panel, with DigUp's shortcut as its default. A key the person sets there stays.
+#[cfg(target_os = "linux")]
+pub mod kde {
+    use zbus::blocking::{Connection, Proxy};
+    use zbus::zvariant::OwnedObjectPath;
+
+    const SERVICE: &str = "org.kde.kglobalaccel";
+    /// The component, the action, and their names as System Settings shows them (sent as a slice: `as` on D-Bus).
+    const ACTION: [&str; 4] = ["com.abdurrahim.DigUp", "toggle-panel", "DigUp", "Show or Hide the Search Panel"];
+    // KGlobalAccel's flags (kglobalacceld.h), and Qt's modifiers in a key code.
+    const SET_PRESENT: u32 = 2;
+    const IS_DEFAULT: u32 = 8;
+    const SHIFT: i32 = 0x0200_0000;
+    const CTRL: i32 = 0x0400_0000;
+    const ALT: i32 = 0x0800_0000;
+    const META: i32 = 0x1000_0000;
+    const F1: i32 = 0x0100_0030;
+
+    /// A KDE session with its shortcut service.
+    pub fn available() -> bool {
+        let kde = std::env::var("XDG_CURRENT_DESKTOP")
+            .is_ok_and(|desktops| desktops.split(':').any(|desktop| desktop.eq_ignore_ascii_case("KDE")));
+        kde && Connection::session().is_ok_and(|connection| {
+            connection
+                .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"),
+                             "NameHasOwner", &(SERVICE,))
+                .is_ok_and(|reply| reply.body().deserialize::<bool>().unwrap_or(false))
+        })
+    }
+
+    fn service(connection: &Connection) -> zbus::Result<Proxy<'static>> {
+        Proxy::new(connection, SERVICE, "/kglobalaccel", "org.kde.KGlobalAccel")
+    }
+
+    /// Registers the panel's action with `accelerator` (Tauri's form) as its default, then runs `pressed` on a thread of
+    /// its own each time the key is pressed while DigUp runs.
+    pub fn listen(accelerator: &str, pressed: impl Fn() + Send + 'static) -> Result<(), String> {
+        let key = to_qt(accelerator)?;
+        let (ready, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let register = || -> zbus::Result<_> {
+                let connection = Connection::session()?;
+                let accel = service(&connection)?;
+                // A key sequence is always four ints on D-Bus (unused ones 0): KDE reads four, and one short aborts it.
+                let keys = vec![(vec![key, 0, 0, 0],)];
+                accel.call_method("doRegister", &(ACTION.as_slice(),))?;
+                // Active, then the default, as KDE's own library does. Without NoAutoloading, a key the person chose
+                // stays and comes back instead of ours.
+                accel.call_method("setShortcutKeys", &(ACTION.as_slice(), &keys, SET_PRESENT))?;
+                accel.call_method("setShortcutKeys", &(ACTION.as_slice(), &keys, IS_DEFAULT))?;
+                let path: OwnedObjectPath = accel.call("getComponent", &(ACTION[0],))?;
+                let component = Proxy::new(&connection, SERVICE, path, "org.kde.kglobalaccel.Component")?;
+                let signals = component.receive_signal("globalShortcutPressed")?;
+                Ok((connection, signals))
+            };
+            let (_connection, signals) = match register() {
+                Ok(registered) => registered,
+                Err(error) => {
+                    let _ = ready.send(Err(error.to_string()));
+                    return;
+                }
+            };
+            let _ = ready.send(Ok(()));
+            for message in signals {
+                if let Ok((_, action, _)) = message.body().deserialize::<(String, String, i64)>() {
+                    if action == ACTION[1] {
+                        pressed();
+                    }
+                }
+            }
+        });
+        answer.recv().map_err(|_| "KDE's shortcut service didn't answer".to_string())?
+    }
+
+    /// DigUp's key as KDE has it now ("Ctrl+Shift+Space"), once registered.
+    pub fn current() -> Option<String> {
+        let connection = Connection::session().ok()?;
+        let keys: Vec<(Vec<i32>,)> = service(&connection).ok()?.call("shortcutKeys", &(ACTION.as_slice(),)).ok()?;
+        keys.first().and_then(|(chords,)| chords.first()).map(|&key| shown(key))
+    }
+
+    /// DigUp quits: the key is free again until it runs.
+    pub fn stop() {
+        if let Ok(connection) = Connection::session() {
+            if let Ok(accel) = service(&connection) {
+                let _ = accel.call_method("setInactive", &(ACTION.as_slice(),));
+            }
+        }
+    }
+
+    /// Tauri's form of a shortcut ("CommandOrControl+Shift+Space") as Qt's key code.
+    pub fn to_qt(accelerator: &str) -> Result<i32, String> {
+        let parts: Vec<&str> = accelerator.split('+').map(str::trim).collect();
+        let (key, modifiers) = parts.split_last().ok_or("no key")?;
+        let mut code = 0;
+        for modifier in modifiers {
+            code |= match modifier.to_ascii_lowercase().as_str() {
+                "commandorcontrol" | "cmdorctrl" | "control" | "ctrl" => CTRL,
+                "shift" => SHIFT,
+                "alt" | "option" => ALT,
+                "super" | "meta" | "command" | "cmd" => META,
+                _ => return Err(format!("{accelerator}: {modifier} isn't a key KDE knows")),
+            };
+        }
+        let upper = key.to_ascii_uppercase();
+        let function = upper.strip_prefix('F').and_then(|number| number.parse::<i32>().ok()).filter(|n| (1..=24).contains(n));
+        code |= match (upper.as_str(), function) {
+            ("SPACE", _) => 0x20,
+            ("ENTER" | "RETURN", _) => 0x0100_0004,
+            ("TAB", _) => 0x0100_0001,
+            ("BACKQUOTE", _) => 0x60,
+            ("SLASH", _) => 0x2f,
+            ("PERIOD", _) => 0x2e,
+            ("COMMA", _) => 0x2c,
+            (_, Some(number)) => F1 + number - 1,
+            (one, None) if one.len() == 1 && one.chars().all(|c| c.is_ascii_alphanumeric()) => one.as_bytes()[0] as i32,
+            _ => return Err(format!("{accelerator}: {key} isn't a key KDE knows")),
+        };
+        Ok(code)
+    }
+
+    /// A Qt key code in the words of the panel and setup: "Ctrl+Shift+Space".
+    pub fn shown(code: i32) -> String {
+        let mut parts = Vec::new();
+        for (flag, name) in [(META, "Meta"), (CTRL, "Ctrl"), (ALT, "Alt"), (SHIFT, "Shift")] {
+            if code & flag != 0 {
+                parts.push(name.to_string());
+            }
+        }
+        let key = code & !(SHIFT | CTRL | ALT | META);
+        parts.push(match key {
+            0x20 => "Space".to_string(),
+            0x0100_0004 => "Enter".to_string(),
+            0x0100_0001 => "Tab".to_string(),
+            _ if (F1..F1 + 35).contains(&key) => format!("F{}", key - F1 + 1),
+            _ => char::from_u32(key as u32).map(String::from).unwrap_or_else(|| format!("{key:#x}")),
+        });
         parts.join("+")
     }
 }
