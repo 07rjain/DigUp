@@ -11,6 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TAG=b11461   # the first tags with EmbeddingGemma 2 (text + vision + audio) are b11452+
+COMMIT=4d756bc72bf00a4aacf410ae15a2d315f3db400d   # TAG's commit: a tag can be moved, a commit can't
 # A new TAG ships only if `swift test` passes: ReferenceVectorTests checks it makes the same vectors, so every index is
 # kept. If it fails, keep this TAG, or bump LlamaEmbedder.vectorVersion and write the reference vectors again
 # (DIGUP_WRITE_REFERENCE=1 swift test --filter ReferenceVectorTests): every index then embeds again.
@@ -45,6 +46,10 @@ elif [[ "$(git -C "$SOURCE" describe --tags --exact-match 2>/dev/null)" != "$TAG
   git -C "$SOURCE" fetch --quiet --depth 1 origin tag "$TAG"
   git -C "$SOURCE" checkout --quiet --force "$TAG"   # --force also drops the old patch
 fi
+if [[ "$(git -C "$SOURCE" rev-parse HEAD)" != "$COMMIT" ]]; then
+  echo "llama.cpp's $TAG isn't commit $COMMIT here: not building it" >&2
+  exit 1
+fi
 # Without the patch, every input token costs 1 MiB of logits that an embedding model never produces (262k vocabulary).
 if git -C "$SOURCE" apply --check "../../$PATCH" 2>/dev/null; then
   git -C "$SOURCE" apply "../../$PATCH"
@@ -53,7 +58,7 @@ fi
 if ! command -v cmake > /dev/null; then
   if [[ ! -x Vendor/cmake-venv/bin/cmake ]]; then
     uv venv --quiet Vendor/cmake-venv --python 3.12
-    uv pip install --quiet --python Vendor/cmake-venv/bin/python cmake ninja
+    uv pip install --quiet --python Vendor/cmake-venv/bin/python cmake==4.4.4 ninja==1.13.2
   fi
   export PATH="$PWD/Vendor/cmake-venv/bin:$PATH"
 fi
