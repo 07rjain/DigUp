@@ -50,6 +50,8 @@ struct Shell {
     status: Mutex<Option<MenuItem<Wry>>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
+    /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
+    watchdog_stops: Mutex<Vec<Instant>>,
     /// Debug runs with setup: the panel's query waits until the first index is in.
     debug_query_sent: AtomicBool,
     logs: PathBuf,
@@ -397,6 +399,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         watcher: Mutex::new(None),
         status: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
+        watchdog_stops: Mutex::default(),
         debug_query_sent: AtomicBool::new(false),
         logs,
     });
@@ -723,9 +726,32 @@ fn index_event(app: &AppHandle, event: Value) {
         "waiting" => set_status(app, "Waiting for the model"),
         "error" => set_status(app, &format!("Indexing: {}", event["message"].as_str().unwrap_or("error"))),
         "exit" => reload(app, true),
+        "ended" => index_ended(app, &event),
         _ => {}
     }
     let _ = app.emit("helper", json!({"from": "index", "event": event}));
+}
+
+/// The index helper ended by itself (helper.rs's "ended"). A sync asked of it as it was leaving (it exits a minute after
+/// it's done) still has to happen; its watchdog's exit (75: a file whose reading ran away, which the next helper skips)
+/// starts another, though not over and over if something else is wrong (as the Mac app's `Engine.helperExited`).
+fn index_ended(app: &AppHandle, event: &Value) {
+    const STOPPED_ON_FILE: i64 = 75;
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let again = if event["status"].as_i64() == Some(STOPPED_ON_FILE) {
+        let mut stops = shell.watchdog_stops.lock().unwrap();
+        stops.retain(|stop| stop.elapsed() < Duration::from_secs(600));
+        stops.push(Instant::now());
+        if stops.len() > 3 {
+            eprintln!("digup-shell: indexing stopped on files 4 times in 10 min");
+        }
+        stops.len() <= 3
+    } else {
+        event["owed"] == true && event["status"].as_i64() == Some(0)
+    };
+    if again {
+        run_index(app);
+    }
 }
 
 fn model_event(app: &AppHandle, event: Value) {
