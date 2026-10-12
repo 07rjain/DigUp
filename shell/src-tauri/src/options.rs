@@ -95,13 +95,15 @@ impl Options {
     }
 }
 
-/// The helper beside this program, or in its `helper` folder (a test build keeps the helper and its libraries there:
-/// on Windows "DigUp.exe" and "digup.exe" can't share a folder).
+/// The helper in the `helper` folder beside this program (Windows: "DigUp.exe" and "digup.exe" can't share a folder),
+/// or where the Linux packages put it (lib/DigUp/helper beside their bin folder), else beside this program.
 fn default_helper() -> PathBuf {
     let name = if cfg!(windows) { "digup.exe" } else { "digup" };
     let Some(folder) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from)) else {
         return PathBuf::from(name);
     };
-    let inside = folder.join("helper").join(name);
-    if inside.is_file() { inside } else { folder.join(name) }
+    [folder.join("helper").join(name), folder.join("../lib/DigUp/helper").join(name)]
+        .into_iter()
+        .find(|helper| helper.is_file())
+        .unwrap_or_else(|| folder.join(name))
 }

@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "helper/": "helper/"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libcurl4t64 | libcurl4"]
+      }
+    }
+  }
+}
