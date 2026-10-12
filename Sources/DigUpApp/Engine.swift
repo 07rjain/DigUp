@@ -940,7 +940,7 @@ nonisolated final class Engine: @unchecked Sendable {
         update { $0.encoder = .starting }
         let started = Date()
         do {
-            // The bundled helper runs the model (`digup worker`); DIGUP_WORKER_DIR swaps in another worker.
+            // The bundled helper runs the model (`digup worker`); in dev runs DIGUP_WORKER_DIR swaps in another worker.
             var config = python ?? .helper(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup"))
             config.environment["DIGUP_MODELS"] = modelsDirectory.path
             config.log = indexDirectory.appendingPathComponent("worker-query.log")
