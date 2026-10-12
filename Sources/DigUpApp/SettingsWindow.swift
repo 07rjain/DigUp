@@ -347,6 +347,29 @@ private struct FolderSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Toggle(isOn: Binding(get: { state.model.settings.indexHoursOn }, set: { on in
+                    state.app.setIndexHours(on: on, hours: state.model.settings.indexHours)
+                })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Index only at set hours")
+                        Text("Files are read only between these times, and what changed meanwhile is picked up when "
+                             + "they begin. Search works all day.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if state.model.settings.indexHoursOn {
+                    LabeledContent("From") {
+                        HStack(spacing: 6) {
+                            DatePicker("From", selection: time(\.start), displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                            Text("to")
+                            DatePicker("To", selection: time(\.end), displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -367,6 +390,20 @@ private struct FolderSettings: View {
 
     private var removalTitle: String {
         "Stop searching “\(removing.map { ($0.path as NSString).lastPathComponent } ?? "")”?"
+    }
+
+    /// One end of the set hours, as a time of day for a date picker.
+    private func time(_ end: KeyPath<IndexHours, Int>) -> Binding<Date> {
+        Binding(get: {
+            let minute = state.model.settings.indexHours[keyPath: end]
+            return Calendar.current.date(bySettingHour: minute / 60, minute: minute % 60, second: 0, of: Date()) ?? Date()
+        }, set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+            let hours = state.model.settings.indexHours
+            state.app.setIndexHours(on: true, hours: end == \IndexHours.start ? IndexHours(start: minute, end: hours.end)
+                                                                              : IndexHours(start: hours.start, end: minute))
+        })
     }
 }
 

@@ -31,6 +31,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var vectors = 0
     var paused = false
     var waitingFor: String?   // why the backfill waits ("on battery"), if it does
+    /// Outside the set hours ("Index only at set hours"): when indexing may run again (`IndexSchedule`).
+    var heldUntil: Date?
     /// The helper found no model yet (it's downloading): files are found and named, nothing gets embedded.
     var waitingForModel = false
     /// Chosen folders that aren't there right now (an unplugged drive): skipped, and their files kept.
@@ -127,6 +129,7 @@ nonisolated final class Engine: @unchecked Sendable {
 
     // Any thread, under `lock`
     private var paused = false
+    private var heldUntil: Date?
     private var backfillBlocker: String?
     private var roots: [URL]
     private var excluded: [URL]
@@ -161,7 +164,7 @@ nonisolated final class Engine: @unchecked Sendable {
     private let onStatus: @MainActor @Sendable (EngineStatus) -> Void
 
     /// `backfillBlocker`: why the first full pass has to wait (see `PowerPolicy`), or nil.
-    init(settings: AppSettings, backfillBlocker: String?,
+    init(settings: AppSettings, backfillBlocker: String?, heldUntil: Date?,
          onStatus: @escaping @MainActor @Sendable (EngineStatus) -> Void) {
         indexDirectory = settings.indexDirectory
         modelsDirectory = settings.modelsDirectory
@@ -174,8 +177,10 @@ nonisolated final class Engine: @unchecked Sendable {
         codeQuietSeconds = settings.codeQuietSeconds
         pruneWanted = !settings.roots.isEmpty
         self.backfillBlocker = backfillBlocker
+        self.heldUntil = heldUntil
         self.onStatus = onStatus
         status.waitingFor = backfillBlocker
+        status.heldUntil = heldUntil
     }
 
     // MARK: Status
@@ -474,10 +479,14 @@ nonisolated final class Engine: @unchecked Sendable {
     /// its last file. Before the model has downloaded it only syncs (file names become searchable) and exits.
     private func startHelper() {
         let (roots, excluded, types, paused, backfill): ([URL], [URL], [String], Bool, Bool) = lock.withLock {
-            (self.roots, self.excluded, self.excludedTypes, self.paused, backfillBlocker == nil)
+            (self.roots, self.excluded, self.excludedTypes, self.paused || heldUntil != nil, backfillBlocker == nil)
         }
         let (codeRoots, codeExcluded) = lock.withLock { (self.codeRoots, self.codeExcluded) }
-        guard helper == nil, !paused else { return }
+        guard helper == nil, !paused else {
+            // Paused, or outside the set hours: the next start syncs. Launched outside them, it never started.
+            if helper == nil { update { if case .starting = $0.activity { $0.activity = .idle } } }
+            return
+        }
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
             update { $0.activity = .idle }
             return
@@ -754,6 +763,17 @@ nonisolated final class Engine: @unchecked Sendable {
         log(paused ? "indexing paused" : "indexing resumed")
         indexQueue.async { [self] in
             if paused { stopHelper() } else { startHelper() }
+        }
+    }
+
+    /// From `IndexSchedule`: outside the set hours, when indexing may run again (the helper stops after its batch, as
+    /// with Pause, and none starts till then; changes meanwhile are found by the first sync after); nil inside them.
+    /// Pause is separate: neither undoes the other.
+    func setHeldUntil(_ date: Date?) {
+        lock.withLock { heldUntil = date }
+        update { $0.heldUntil = date }
+        indexQueue.async { [self] in
+            if date != nil { if helper != nil { stopHelper() } } else { startHelper() }
         }
     }
 
