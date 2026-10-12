@@ -62,6 +62,20 @@ import WinSDK
         #expect(states == ["/a/stuck.pdf": "failed", "/a/book.pdf": "done"])
     }
 
+    #if canImport(AppKit)
+    @Test func picturesThatCouldntBeReadAreReadOnceMore() throws {
+        // An SVG skipped by an older DigUp as "small image 0×0" (ImageIO couldn't open it): AppKit draws it now.
+        let store = try IndexStore(directory: folder)
+        let svg = try store.insert(file("/a/chart.svg", inode: 1))
+        try store.finish(svg, state: "skipped", detail: "small image 0×0")
+        let icon = try store.insert(file("/a/icon.png", inode: 2))
+        try store.finish(icon, state: "skipped", detail: "small image 160×160")   // small, and rightly skipped
+        #expect(try store.readAgainOnce() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/chart.svg"])
+        #expect(try store.readAgainOnce() == 0)
+    }
+    #endif
+
     @Test func modelFileHashesStreamInPieces() throws {
         let small = folder.appendingPathComponent("abc")
         try Data("abc".utf8).write(to: small)

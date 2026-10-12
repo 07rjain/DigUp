@@ -11,9 +11,13 @@ import Vision
 extension ImageExtractor {
     /// Writes a downscaled copy for the model. ImageIO decodes straight to the thumbnail size, so a 48 MP photo never
     /// gets decoded at full resolution. HEIC, RAW, WebP and friends all work.
+    /// Pictures ImageIO can't open (SVG) are drawn with AppKit (`drawn`).
+    static let drawsVectorPictures = true
+
     static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
-        else { throw ExtractError.unreadable("not an image") }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetType(source) != nil
+        else { return try drawn(url, maxPixel: maxPixel, minSide: minSide, to: folder, png: png) }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
         let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
@@ -31,6 +35,32 @@ extension ImageExtractor {
         let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
         return Prepared(path: out.path, width: width, height: height,
                         taken: exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+    }
+
+    /// A picture ImageIO can't read, like an SVG: AppKit draws it, straight at the size the model needs (a vector
+    /// picture has no pixels of its own: its size in points stands for them). Transparent parts come out white, as
+    /// they look on a page.
+    private static func drawn(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
+        guard let image = NSImage(contentsOf: url), image.size.width > 0, image.size.height > 0
+        else { throw ExtractError.unreadable("can't read this picture") }
+        let (width, height) = (Int(image.size.width.rounded()), Int(image.size.height.rounded()))
+        guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+        let scale = CGFloat(maxPixel) / max(image.size.width, image.size.height)
+        let side = (max(1, Int((image.size.width * scale).rounded())), max(1, Int((image.size.height * scale).rounded())))
+        guard let context = CGContext(data: nil, width: side.0, height: side.1, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { throw ExtractError.unreadable("can't draw this picture") }
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: side.0, height: side.1))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        image.draw(in: NSRect(x: 0, y: 0, width: side.0, height: side.1))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let bitmap = context.makeImage() else { throw ExtractError.unreadable("can't draw this picture") }
+        let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
+        try write(bitmap, to: out, png: png)
+        return Prepared(path: out.path, width: width, height: height, taken: nil)
     }
 
     static func fullImage(_ url: URL) -> CGImage? {

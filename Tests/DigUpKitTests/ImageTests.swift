@@ -42,6 +42,30 @@ import ImageIO
         }
     }
 
+    #if canImport(AppKit)
+    @Test func vectorPicturesAreDrawn() throws {
+        // An SVG, which ImageIO doesn't open: red on the left, blue on the right, 800×400 points.
+        let chart = folder.appendingPathComponent("chart.svg")
+        try ##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400"><rect width="400" height="400" fill="#f00"/><rect x="400" width="400" height="400" fill="#00f"/></svg>"##
+            .write(to: chart, atomically: true, encoding: .utf8)
+        let prepared = try ImageExtractor.prepare(chart, maxPixel: 1024, minSide: 256, to: folder, png: true)
+        #expect(prepared.width == 800 && prepared.height == 400)
+        let shown = try Self.decode(prepared.path)
+        #expect(shown.width == 1024 && shown.height == 512)
+        #expect(shown.quadrants == ["R", "B", "R", "B"])
+        // An icon is still too small to say much.
+        let icon = folder.appendingPathComponent("icon.svg")
+        try ##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="#0f0"/></svg>"##
+            .write(to: icon, atomically: true, encoding: .utf8)
+        do {
+            _ = try ImageExtractor.prepare(icon, maxPixel: 1024, minSide: 256, to: folder, png: true)
+            Issue.record("a 24-point icon was read")
+        } catch {
+            #expect("\(error)" == "small image 24×24")
+        }
+    }
+    #endif
+
     /// A picture's size and the color in the middle of each quadrant (top left, top right, bottom left, bottom right),
     /// as R, G, B or Y.
     static func decode(_ path: String) throws -> (width: Int, height: Int, quadrants: [String]) {

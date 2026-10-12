@@ -383,17 +383,26 @@ public final class IndexStore {
                    [.text(state), .optional(detail), .optional(json), .double(Date().timeIntervalSince1970), .int(id)])
     }
 
-    /// PDFs with pages read as pictures (scans), read once more, since such pages get their words from OCR now: an
-    /// index made before that has none for them. Once per index (`meta` "scans_ocr"), and only where there's OCR; the
-    /// schema stays as it was, so an older DigUp still opens the index. Returns how many PDFs.
+    /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
+    /// so an older DigUp still opens the index): PDFs with pages read as pictures, whose words come from OCR now
+    /// (`meta` "scans_ocr"), and pictures that couldn't be read at all, like SVGs, which AppKit draws now
+    /// ("pictures_drawn"). Only where this machine does either. Returns how many files.
     @discardableResult
-    public func readScansAgainOnce() throws -> Int {
-        guard OCR.isAvailable, try meta("scans_ocr") == nil else { return 0 }
-        var files: [Int64] = []
-        try db.query("SELECT DISTINCT file FROM segments WHERE kind = 'page_image'") { files.append($0.int(0)) }
+    public func readAgainOnce() throws -> Int {
+        var files = Set<Int64>(), flags: [String] = []
+        if OCR.isAvailable, try meta("scans_ocr") == nil {
+            try db.query("SELECT DISTINCT file FROM segments WHERE kind = 'page_image'") { files.insert($0.int(0)) }
+            flags.append("scans_ocr")
+        }
+        if ImageExtractor.drawsVectorPictures, try meta("pictures_drawn") == nil {
+            try db.query("SELECT id FROM files WHERE kind = 'image' AND state = 'skipped' AND detail = ?",
+                         [.text(ExtractError.tooSmall(0, 0).description)]) { files.insert($0.int(0)) }
+            flags.append("pictures_drawn")
+        }
+        guard !flags.isEmpty else { return 0 }
         try db.transaction {
             for file in files { try requeue(file) }
-            try setMeta("scans_ocr", "1")
+            for flag in flags { try setMeta(flag, "1") }
         }
         return files.count
     }

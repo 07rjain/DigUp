@@ -300,7 +300,7 @@ func index(_ args: Arguments) throws {
     })
     indexer.embedderSource = embedderSource()
     indexer.costsFolder = store.directory
-    try store.readScansAgainOnce()   // OCR for scanned pages, which older indexes lack
+    try store.readAgainOnce()   // what older indexes couldn't read: scanned pages' words, SVGs
     try indexer.checkModel()
     let folders = try args.folders()
     let sync = try indexer.sync(folders)

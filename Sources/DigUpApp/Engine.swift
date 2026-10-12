@@ -629,7 +629,7 @@ nonisolated final class Engine: @unchecked Sendable {
         case "stopped":
             log("indexer: skipped \(tildePath(event["path"] as? String ?? "?")): it \(event["why"] as? String ?? "")")
         case "rescan":
-            log("indexer: reading \(int("files")) PDFs with scanned pages again, for their words")
+            log("indexer: reading \(int("files")) files again that DigUp reads better now (scans' words, SVGs)")
         case "pruned":
             log("indexer: \(int("files")) files under folders no longer chosen left the index")
         case "reindex":
