@@ -20,9 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
@@ -48,6 +49,8 @@ struct Shell {
     watcher: Mutex<Option<FolderWatcher>>,
     /// The tray menu's first line: what's going on.
     status: Mutex<Option<MenuItem<Wry>>>,
+    /// The tray menu's "Open at Login", checked while it does.
+    login_item: Mutex<Option<CheckMenuItem<Wry>>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
@@ -127,6 +130,12 @@ impl Shell {
     fn model_ready(&self) -> bool {
         self.model_state.lock().unwrap()["state"] == "ready"
     }
+
+    /// DigUp may open at login: not on a Mac (the DigUp app has its own login item) and not in a dev run with a settings
+    /// file of its own.
+    fn opens_at_login(&self) -> bool {
+        !cfg!(target_os = "macos") && self.options.settings.is_none()
+    }
 }
 
 // MARK: Commands
@@ -202,13 +211,20 @@ async fn pick_folders(app: AppHandle) -> Vec<String> {
 /// Setup's last step: the folders are saved and indexing starts (once the model is in).
 #[tauri::command]
 fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
     let first = !shell.is_set_up();
     {
         let mut settings = shell.settings.lock().unwrap();
         settings.folders = folders;
         settings.set_up = true;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    // The first setup has DigUp open at login (it lives in the tray; "Open at Login" in its menu turns that off), as the
+    // Mac app does.
+    if first && shell.opens_at_login() {
+        if let Err(error) = app.autolaunch().enable() {
+            eprintln!("digup-shell: can't open at login: {error}");
+        }
+        refresh_login_item(&app);
     }
     // The first setup adds the shortcut to GNOME's settings; a later one (Choose Folders…) leaves it as the person has
     // it there.
@@ -308,6 +324,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _, event| {
@@ -398,6 +415,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         model_state: Mutex::new(json!({"state": "checking"})),
         watcher: Mutex::new(None),
         status: Mutex::new(None),
+        login_item: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
         debug_query_sent: AtomicBool::new(false),
@@ -638,12 +656,17 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let search = MenuItem::with_id(app, "search", "Search…", true, accelerator.as_deref())?;
     let folders = MenuItem::with_id(app, "folders", "Choose Folders…", true, None::<&str>)?;
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
+    let login = CheckMenuItem::with_id(app, "login", "Open at Login", true, false, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
         &[&status, &separator, &search, &folders, &index, &PredefinedMenuItem::separator(app)?, &quit_item],
     )?;
+    if shell.opens_at_login() {
+        menu.insert(&login, 5)?;
+        *shell.login_item.lock().unwrap() = Some(login);
+    }
     // A Mac's menu bar takes a template (it colors it); trays elsewhere show the app's own small icon.
     #[cfg(target_os = "macos")]
     let icon = tauri::include_image!("icons/tray-template.png");
@@ -661,6 +684,14 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
                 let _ = show_setup(app);
             }
             "index" => run_index(app),
+            "login" => {
+                let autolaunch = app.autolaunch();
+                let result = if autolaunch.is_enabled().unwrap_or(false) { autolaunch.disable() } else { autolaunch.enable() };
+                if let Err(error) = result {
+                    eprintln!("digup-shell: can't change opening at login: {error}");
+                }
+                refresh_login_item(app);
+            }
             "quit" => quit(app),
             _ => {}
         })
@@ -674,7 +705,15 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         })
         .build(app)?;
     *shell.status.lock().unwrap() = Some(status);
+    refresh_login_item(app);
     Ok(())
+}
+
+/// "Open at Login" shows whether DigUp does.
+fn refresh_login_item(app: &AppHandle) {
+    if let Some(item) = app.state::<Arc<Shell>>().login_item.lock().unwrap().as_ref() {
+        let _ = item.set_checked(app.autolaunch().is_enabled().unwrap_or(false));
+    }
 }
 
 fn set_status(app: &AppHandle, text: &str) {
