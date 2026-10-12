@@ -46,6 +46,7 @@ final class AppController {
             if model.statusLine != before { log("status: \(model.statusLine)") }
         }
         engineRef = engine
+        Estimates.indexDirectory = settings.indexDirectory
         self.download = download
         self.model = model
         self.power = power

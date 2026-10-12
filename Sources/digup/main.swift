@@ -17,6 +17,8 @@ let usage = """
       digup search <words>... [--kind K,K] [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup status                            what's in the index
+      digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
+                                              what indexing has measured here (costs.json in the index folder)
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                           [--memory-limit MB] [--time-limit S]
@@ -208,6 +210,14 @@ func embedderSource() -> String? {
 func estimate(_ args: Arguments) throws {
     guard !args.positional.isEmpty else { throw CLIError("which folders? e.g. digup estimate ~/Documents") }
     let options = args.options
+    // What indexing costs on this machine: as measured by indexing here, kind by kind, once there's enough of it;
+    // until then the M4 Pro's fixed costs, scaled by a second's speed check (done once and kept beside the index).
+    var measured = MeasuredCosts.load(from: args.indexFolder)
+    if measured.speed == nil, let speed = MeasuredCosts.Speed.measure() {
+        measured.speed = speed
+        MeasuredCosts.setSpeed(speed, in: args.indexFolder)
+    }
+    let costs = measured.costs
     var total = 0.0
     for folder in args.positional.map(Arguments.folderURL) {
         // One folder that isn't there or can't be read (a denied privacy prompt) mustn't sink the others.
@@ -222,7 +232,7 @@ func estimate(_ args: Arguments) throws {
         }
         let started = Date()
         let crawl = Crawler.crawl([folder], options: options)
-        let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options)
+        let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options, costs: costs)
         let estimate = parts.values.reduce(Estimate(), +)
         // Biggest first; the app lists them under the folder, so that a long first pass can be cut down.
         let subfolders = parts.filter { $0.key != folder.path }.sorted {
@@ -289,6 +299,7 @@ func index(_ args: Arguments) throws {
         try makeEmbedder(textOnly: false, log: store.directory.appendingPathComponent("worker.log"))
     })
     indexer.embedderSource = embedderSource()
+    indexer.costsFolder = store.directory
     try indexer.checkModel()
     let folders = try args.folders()
     let sync = try indexer.sync(folders)
@@ -403,6 +414,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
     func part(_ file: String, options: IndexOptions, roots: [URL]) throws -> IndexService.Part {
         let store = try IndexStore(directory: args.indexFolder, file: file)
         let indexer = try Indexer(store: store, options: options, makeEmbedder: { try model.embedder() })
+        indexer.costsFolder = args.indexFolder   // what indexing costs here, for later estimates
         // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
         indexer.embedderSource = embedderSource()
         indexer.resetOnModelChange = { indexed, now in
@@ -432,6 +444,25 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
                                linger: args.values["--linger"].flatMap(Double.init) ?? 60)
     return service.serve()
+}
+
+/// `digup speed`: the speed check estimates start from, and what indexing has measured on this machine.
+func speed(_ args: Arguments) {
+    if let seconds = MeasuredCosts.Speed.measuredSeconds() {
+        let speed = MeasuredCosts.Speed.compared(seconds)
+        print(String(format: "20 float16 matrix multiplies (2048²) %.3f s · Vision on a made-up screenshot %.3f s",
+                     seconds.multiplies, seconds.ocr))
+        print(String(format: "next to the M4 Pro behind the fixed costs: the model's work ×%.2f, OCR ×%.2f (1 = as fast)",
+                     speed.embedding, speed.ocr))
+    } else {
+        print("no speed check here (no Metal): the fixed costs stand in until indexing has measured this machine's")
+    }
+    let measured = MeasuredCosts.load(from: args.indexFolder)
+    print("measured by indexing (\(tilde(MeasuredCosts.file(in: args.indexFolder).path))):"
+          + (measured.tallies.isEmpty ? " nothing yet" : ""))
+    for (name, tally) in measured.tallies.sorted(by: { $0.key < $1.key }) {
+        print(String(format: "  %@ %.4f s each, over %.0f", name, tally.seconds / tally.units, tally.units))
+    }
 }
 
 // MARK: Eval
@@ -544,6 +575,7 @@ do {
     case "index": try index(args)
     case "search": try search(args)
     case "status": try status(args)
+    case "speed": speed(args)
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))

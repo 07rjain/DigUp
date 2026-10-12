@@ -26,6 +26,10 @@ nonisolated struct FolderEstimate: Identifiable, Sendable {
 }
 
 enum Estimates {
+    /// The app's index folder: the helper estimates with what indexing has measured on this Mac (`MeasuredCosts`, kept
+    /// there), and keeps its speed check there the first time.
+    nonisolated(unsafe) static var indexDirectory: URL?
+
     /// Estimates each folder in turn, leaving out what's skipped, calling `update` (on the main actor) as each one
     /// arrives. `code`: what code search would read there (`digup estimate --code`). Returns the helper, for stopping it
     /// when nothing wants its answers any more (it ends by itself when the app does).
@@ -35,6 +39,7 @@ enum Estimates {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
         var arguments = ["estimate", "--json"]
+        if let indexDirectory { arguments += ["--index", indexDirectory.path] }
         if code { arguments.append("--code") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
         if !types.isEmpty { arguments += ["--exclude-ext", types.joined(separator: ",")] }

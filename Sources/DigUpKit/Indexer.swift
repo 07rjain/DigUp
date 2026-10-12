@@ -47,6 +47,10 @@ public final class Indexer {
     /// The vector source of the embedders `makeEmbedder` makes, when it's known without starting one (llama.cpp's is):
     /// then `checkModel()` can notice a new model before anything needs embedding.
     public var embedderSource: String?
+    /// The index folder, where what indexing costs on this Mac is kept (`MeasuredCosts`) for estimates. Unset: nothing
+    /// is kept.
+    public var costsFolder: URL?
+    private var measured = MeasuredCosts()
 
     public init(store: IndexStore, options: IndexOptions, makeEmbedder: @escaping () throws -> any Embedder) throws {
         self.store = store
@@ -221,6 +225,10 @@ public final class Indexer {
         defer {
             // A job prepared for a run that stopped early: throw its files away.
             if let ahead { try? FileManager.default.removeItem(at: ahead.wait().folder) }
+            if let costsFolder, !measured.tallies.isEmpty {
+                MeasuredCosts.merge(measured, into: costsFolder)
+                measured = MeasuredCosts()
+            }
         }
         for (index, job) in jobs.enumerated() {
             guard !shouldStop() else { break }
@@ -231,8 +239,29 @@ public final class Indexer {
             guard !skip(job) else { continue }
             // The helper's and the CLI's main thread has no run loop to drain what Foundation autoreleases while a job
             // commits: without a pool per job it all stayed until the process exited (~30 KB a text chunk).
+            let modelWasRunning = worker != nil
             let results = try autoreleasepool { try commit(prepared) }
-            committed(index, job, results, Date().timeIntervalSince(started) / Double(job.files.count))
+            let seconds = Date().timeIntervalSince(started)
+            if modelWasRunning { measure(prepared, seconds: seconds) }   // else it's seconds of the model starting
+            committed(index, job, results, seconds / Double(job.files.count))
+        }
+    }
+
+    /// What a job read and how long it took (its reading and its model's work, which overlap), for `MeasuredCosts`.
+    private func measure(_ prepared: Prepared, seconds: Double) {
+        switch prepared.payload {
+        case .images(let screenshot, let ready):
+            measured.add(screenshot ? "screenshot" : "image", units: Double(ready.count), seconds: seconds)
+        case .pdf(let pages, _, _, _): measured.add("pdfPage", units: Double(pages.count), seconds: seconds)
+        case .doc(let chunks, _, _, _):
+            // Chunks with a vector: a data dump's go to keyword search only and take next to nothing, which isn't
+            // what a chunk of prose costs (the estimate can't tell them apart from a file's size).
+            let worded = chunks.filter(SearchText.hasWords).count
+            if worded > 0 { measured.add("docChunk", units: Double(worded), seconds: seconds) }
+        case .audio(_, let duration): measured.add("audioSecond", units: duration, seconds: seconds)
+        case .video(_, _, let duration): measured.add("videoSecond", units: duration, seconds: seconds)
+        case .code(let file): measured.add("codeStretch", units: Double(file.pieces.count), seconds: seconds)
+        case .nothing: break
         }
     }
 

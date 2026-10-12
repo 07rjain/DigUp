@@ -1,13 +1,14 @@
 import Foundation
 
 /// Seconds of indexing per unit, measured 2026-10-07 on an M4 Pro with llama.cpp (Q8_0), reading files while the
-/// model embeds (a full index of the 365-file testbed: 160 s, per-kind sums below). The app will calibrate these with
-/// a few seconds of real work on first launch.
+/// model embeds (a full index of the 365-file testbed: 160 s, per-kind sums below; measured again by indexing on
+/// 2026-10-12, `MeasuredCosts`, the same within 7% but for a chunk of prose, half what it was). Other machines start
+/// from these scaled by a speed check, then go by what indexing measures there (`MeasuredCosts.costs`).
 public struct Costs: Sendable {
     public var image = 0.12              // 140 tokens, decode included
     public var screenshot = 0.32         // 280 tokens; its OCR (0.24 s) runs alongside and sets the pace
     public var pdfPage = 0.09            // text pages are cheap, rendered scans cost an image
-    public var docChunk = 0.095
+    public var docChunk = 0.045          // 40 at a time (a data dump's go to keyword search only, nearly free)
     public var audioSecond = 0.0089      // a 30 s window every 25 s
     public var videoSecond = 0.019       // a 70-token keyframe per shot (at most one per 3 s) + the soundtrack
     /// A stretch of code (2026-10-09: 258 Swift and Objective-C files, 1,245 stretches in 45 s with the model's start).
