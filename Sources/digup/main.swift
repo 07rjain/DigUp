@@ -527,6 +527,10 @@ do {
         exit(0)
     }
     let args = try Arguments(raw.dropFirst())
+    if ["index-service", "worker", "search-service", "download-model"].contains(command)
+        || command == "estimate" && args.flags.contains("--json") {
+        ParentWatch.start()   // an app's helper goes when the app does
+    }
     switch command {
     case "estimate": try estimate(args)
     case "index": try index(args)
