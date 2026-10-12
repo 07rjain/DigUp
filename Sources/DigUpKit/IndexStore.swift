@@ -34,16 +34,29 @@ public final class IndexStore {
     public var scope: [String]? {
         didSet {
             guard let scope else { (scopeSQL, scopeValues) = ("", []); return }
-            scopeSQL = scope.isEmpty ? " AND 0"
-                : " AND (" + scope.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
-            scopeValues = scope.flatMap { root -> [SQLValue] in
-                let prefix = root.hasSuffix("/") ? root : root + "/"
-                return [.text(prefix), .text(prefix + "\u{10FFFF}")]
-            }
+            let ranges = scope.flatMap(Self.pathRanges(under:))
+            scopeSQL = ranges.isEmpty ? " AND 0"
+                : " AND (" + ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
+            scopeValues = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
         }
     }
     private var scopeSQL = ""
     private var scopeValues: [SQLValue] = []
+
+    /// The ranges of the UNIQUE path index that hold the files under `folder`. Paths are stored as a walk reports them,
+    /// which isn't always how the folder is spelled here: `standardizedFileURL` says /var where the walk says
+    /// /private/var, and decomposes a name with accents or Hangul that the disk keeps precomposed ("Café", Google
+    /// Drive's "내 드라이브"). Swift's `==` takes those for the same folder; SQLite compares bytes. So: a range for the
+    /// folder as given, and one for its real path when that's spelled differently.
+    static func pathRanges(under folder: String) -> [(from: String, to: String)] {
+        var spellings = [folder]
+        let real = FolderSelection.realPath(folder)
+        if !real.utf8.elementsEqual(folder.utf8) { spellings.append(real) }
+        return spellings.map { path in
+            let prefix = path.hasSuffix("/") ? path : path + "/"
+            return (prefix, prefix + "\u{10FFFF}")
+        }
+    }
 
     /// The main index's file in the index folder.
     public static let mainFile = "index.sqlite"
@@ -220,12 +233,16 @@ public final class IndexStore {
     /// Every file under one of `roots`.
     public func files(under roots: [String]) throws -> [FileRecord] {
         var out: [FileRecord] = []
-        // A folder inside another one listed is already covered (each file once).
+        var seen = Set<Int64>()   // each file once, also where two spellings of a folder meet
+        // A folder inside another one listed is already covered.
         for root in roots where !roots.contains(where: { FolderSelection.isInside(root, $0) }) {
-            let prefix = root.hasSuffix("/") ? root : root + "/"
-            // A range on the UNIQUE path index: everything that starts with `prefix`.
-            try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
-                         [.text(prefix), .text(prefix + "\u{10FFFF}")]) { out.append(Self.record($0)) }
+            for range in Self.pathRanges(under: root) {
+                try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
+                             [.text(range.from), .text(range.to)]) { row in
+                    let record = Self.record(row)
+                    if seen.insert(record.id).inserted { out.append(record) }
+                }
+            }
         }
         return out
     }
@@ -276,7 +293,7 @@ public final class IndexStore {
     /// Removes every file that isn't under one of `roots` (folders taken out of the app). Returns how many went.
     @discardableResult
     public func prune(keepingUnder roots: [String]) throws -> Int {
-        let prefixes = roots.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        let prefixes = roots.flatMap { Self.pathRanges(under: $0).map(\.from) }   // a folder under /var: /private/var too
         var gone: [Int64] = []
         try db.query("SELECT id, path FROM files") { row in
             let path = row.text(1) ?? ""

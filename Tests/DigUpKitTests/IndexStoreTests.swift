@@ -101,6 +101,34 @@ import WinSDK
         #expect(try indexer.sync([drive]).removed == 0)   // an ejected drive is not "everything deleted"
         #expect(try store.files(under: [drive.path]).count == 1)
     }
+
+    @Test func syncFindsTheRowsOfAFolderSpelledAnotherWay() throws {
+        // The walk stores paths as the disk spells them, and on a Mac these folders are chosen spelled otherwise twice
+        // over: under /var where the disk says /private/var (the temporary folder), and with a name the disk keeps
+        // precomposed that `standardizedFileURL` decomposes (Google Drive's "내 드라이브", "Café"). Looking their rows up
+        // by that spelling found none, so the second sync took every file for new: "UNIQUE constraint failed".
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: IndexOptions(),
+                                  makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
+        var chosen: [URL] = []
+        for name in ["내 드라이브", "Café"] {
+            let onDisk = folder.path + "/" + name.precomposedStringWithCanonicalMapping
+            #if os(Windows)
+            try FileManager.default.createDirectory(atPath: onDisk, withIntermediateDirectories: false)
+            #else
+            #expect(mkdir(onDisk, 0o755) == 0)   // FileManager would decompose the name
+            #endif
+            try Data("notes from the trip".utf8).write(to: URL(fileURLWithPath: onDisk + "/notes.txt"))
+            chosen.append(URL(fileURLWithPath: onDisk).standardizedFileURL)
+        }
+        #expect(try indexer.sync(chosen).added == 2)
+        let again = try indexer.sync(chosen)
+        #expect(again.added == 0 && again.unchanged == 2)
+        #expect(try store.files(under: chosen.map(\.path)).count == 2)
+        store.scope = chosen.map(\.path)
+        #expect(try store.pendingCount() == 2)
+        #expect(try store.prune(keepingUnder: chosen.map(\.path)) == 0)
+    }
 }
 
 /// Sets an environment variable of this process, or removes it (nil).
