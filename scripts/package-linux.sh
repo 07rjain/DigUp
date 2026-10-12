@@ -1,8 +1,8 @@
 #!/bin/bash
 # Builds DigUp for Linux as a .deb and an AppImage: the Tauri shell (shell/), with DigUp's helper, llama.cpp, PDFium and
 # ffmpeg inside. Run it on the CPU architecture the packages are for, after scripts/fetch-vendor.sh and
-# scripts/build-llama.sh. Needs Swift, Rust with Tauri's CLI (`cargo install tauri-cli --version "^2"`), patchelf, and
-# what scripts/build-ffmpeg.sh needs (it builds the small ffmpeg the packages carry):
+# scripts/build-llama.sh. Needs Swift, Rust, Tauri's CLI (`cargo install tauri-cli --version "^2"`, else Node runs it from
+# npm), patchelf, and what scripts/build-ffmpeg.sh needs (it builds the small ffmpeg the packages carry):
 #   scripts/package-linux.sh       → shell/src-tauri/target/release/bundle/{deb,appimage}/
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -36,7 +36,9 @@ for file in "$helper"/digup "$helper"/*.so*; do
   patchelf --set-rpath '$ORIGIN' "$file"
 done
 
-(cd shell/src-tauri && cargo tauri build --bundles deb,appimage)
+tauri=(npx --yes @tauri-apps/cli@2.12.2)
+if cargo tauri --version > /dev/null 2>&1; then tauri=(cargo tauri); fi
+(cd shell/src-tauri && "${tauri[@]}" build --bundles deb,appimage)
 
 # The package's name: Tauri spells "DigUp" as "dig-up".
 deb=$(ls shell/src-tauri/target/release/bundle/deb/*.deb)

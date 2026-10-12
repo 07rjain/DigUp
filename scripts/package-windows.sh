@@ -15,7 +15,8 @@ swift build -c release --product digup
 # What the installer puts beside DigUp.exe, in helper\ ("DigUp.exe" and "digup.exe" can't share a folder): the helper
 # finds the DLLs, llama.cpp's backends and ffmpeg in its own folder. The C++ runtime goes with them, so nothing needs
 # installing first; the shell itself links its C runtime statically (.cargo/config.toml).
-swift_runtime=$(ls -d "$(cygpath "$LOCALAPPDATA")"/Programs/Swift/Runtimes/*/usr/bin | tail -1)
+swift_root=$(cd "$(dirname "$(command -v swift)")/../../../.." && pwd)   # …/Swift from …/Swift/Toolchains/*/usr/bin
+swift_runtime=$(ls -d "$swift_root"/Runtimes/*/usr/bin | tail -1)
 crt=$(ls -d "$(cygpath "$VCToolsRedistDir")"x64/Microsoft.VC*.CRT | tail -1)   # set by the developer environment
 helper=shell/src-tauri/helper
 rm -rf "$helper"
