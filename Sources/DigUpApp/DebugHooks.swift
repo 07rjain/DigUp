@@ -19,6 +19,8 @@ import SwiftUI
 ///     -debugType "a|b c"      then type each query (|-separated) into the field, one key every
 ///                             `-debugTypeInterval` seconds (default 0.09), waiting for its final results; the panel
 ///                             logs how long after the last keystroke they arrived
+///     -debugCompose YES       then compose 사업자 the way a Korean input method does (marked text) while results
+///                             arrive, and log whether the composition held
 ///     -debugSelect "<name>"   before the snapshot, select the first result whose name contains <name>
 ///     -debugPlay YES          after the snapshot, play the selected recording from its moment (muted) for 1.5 s and
 ///                             log where playback got to
@@ -222,7 +224,9 @@ enum DebugHooks {
                         quickLook(row, panel: panel, snapshot: snapshotPath("quicklook")) {
                             press(keys, app, describe: { panelState(panel) }) {
                                 type(typed, in: panel, every: interval) {
-                                    reshow(panel, times: defaults.integer(forKey: "debugReshow"), then: done)
+                                    compose(in: panel) {
+                                        reshow(panel, times: defaults.integer(forKey: "debugReshow"), then: done)
+                                    }
                                 }
                             }
                         }
@@ -596,6 +600,38 @@ enum DebugHooks {
                 NSApp.postEvent(event, atStart: false)
             }
         }
+    }
+
+    /// -debugCompose YES: the calls a Korean input method makes while 사업자 is typed on the 2-Set keyboard (the syllable
+    /// in progress is marked text, committed when the next one starts), one key every 0.25 s while results come in.
+    /// Logs what the field ended with and how many keys found the composition cut short.
+    private static func compose(in panel: SearchPanelController, then done: @escaping () -> Void) {
+        guard UserDefaults.standard.bool(forKey: "debugCompose") else { return done() }
+        guard let editor = panel.field?.currentEditor() as? NSTextView else {
+            log("debug: compose: the field isn't being edited")
+            return done()
+        }
+        editor.selectAll(nil)
+        editor.delete(nil)
+        // Each key: what it commits (the finished syllable), then the new marked text.
+        let keys: [(commit: String, marked: String)] = [("", "ㅅ"), ("", "사"), ("", "상"), ("사", "어"), ("", "업"),
+                                                          ("업", "ㅈ"), ("", "자")]
+        let nowhere = NSRange(location: NSNotFound, length: 0)
+        var cut = 0
+        func press(_ index: Int) {
+            guard index < keys.count else {
+                log("debug: composed 사업자: the field says \"\(panel.field?.stringValue ?? "")\" (still marked: "
+                    + "\(editor.hasMarkedText())); the composition was cut short before \(cut) of \(keys.count - 1) keys")
+                return done()
+            }
+            if index > 0, !editor.hasMarkedText() { cut += 1 }
+            let key = keys[index]
+            if !key.commit.isEmpty { editor.insertText(key.commit, replacementRange: nowhere) }
+            editor.setMarkedText(key.marked, selectedRange: NSRange(location: (key.marked as NSString).length, length: 0),
+                                 replacementRange: nowhere)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { press(index + 1) }
+        }
+        press(0)
     }
 
     private static func characterEvent(_ character: String, modifiers: NSEvent.ModifierFlags, window: Int) -> NSEvent? {
