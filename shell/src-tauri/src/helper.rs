@@ -58,6 +58,8 @@ impl Launch {
             }
         }
         let mut child = command.spawn().map_err(|error| format!("can't start {}: {error}", self.program.display()))?;
+        #[cfg(windows)]
+        job::add(&child);
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         Ok((child, stdin, stdout))
@@ -311,6 +313,48 @@ impl ModelDownload {
         if let Some((mut child, _)) = self.running.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+/// On Windows the helpers go into a job that closes with this process, so they end even if the shell crashes (on Linux
+/// and macOS the helpers watch their parent themselves: `ParentWatch` in Sources/digup). Their own children follow
+/// them into it.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    struct Job(HANDLE);
+    // SAFETY: a job's handle may be used from any thread; it's never closed (the system closes it with this process).
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    fn job() -> Option<&'static Job> {
+        static JOB: OnceLock<Option<Job>> = OnceLock::new();
+        JOB.get_or_init(|| unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return None;
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(handle, JobObjectExtendedLimitInformation,
+                                              &limits as *const _ as *const _, std::mem::size_of_val(&limits) as u32);
+            (set != 0).then_some(Job(handle))
+        })
+        .as_ref()
+    }
+
+    pub fn add(child: &std::process::Child) {
+        if let Some(job) = job() {
+            // SAFETY: both handles are valid: the job's for this process's life, the child's while `child` lives.
+            unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) };
         }
     }
 }
