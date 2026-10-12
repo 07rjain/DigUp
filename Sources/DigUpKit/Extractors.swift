@@ -132,7 +132,9 @@ enum DocExtractor {
 
 /// One line, at most `limit` characters: for result lists.
 func excerpt(_ text: String, limit: Int = 240) -> String {
-    let line = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    // Only the start is shown, so only the start is cleaned up (a page or a chunk can be thousands of characters).
+    let start = text.prefix(limit * 8)
+    let line = String(start).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         .trimmingCharacters(in: .whitespaces)
-    return line.count > limit ? String(line.prefix(limit)) + "…" : line
+    return line.count > limit || start.endIndex < text.endIndex ? String(line.prefix(limit)) + "…" : line
 }

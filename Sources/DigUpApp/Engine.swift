@@ -98,6 +98,10 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperOutput = Data()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
+    /// When the helper's watchdog ended it lately (`stoppedOnFile`).
+    private var watchdogStops: [Date] = []
+    /// The helper's exit status when its watchdog ended it on a file (`digup`'s Watchdog: EX_TEMPFAIL).
+    private static let stoppedOnFile: Int32 = 75
     /// The next helper drops files under folders that are no longer chosen. At launch too, in case the folders
     /// changed while a helper had no time to; but an app with no folders at all never empties the index by itself.
     private var pruneWanted: Bool
@@ -245,7 +249,7 @@ nonisolated final class Engine: @unchecked Sendable {
                 deleteCodeIndex = roots.isEmpty && (wasOn || deleteCodeIndex)
                 if helper != nil {
                     restartHelper = true
-                    send("stop")
+                    stopHelper()
                 } else {
                     removeCodeIndexIfAsked()
                     startHelper()
@@ -274,7 +278,7 @@ nonisolated final class Engine: @unchecked Sendable {
             pruneWanted = true
             if helper != nil {
                 restartHelper = true
-                send("stop")
+                stopHelper()
             } else {
                 startHelper()
             }
@@ -487,6 +491,11 @@ nonisolated final class Engine: @unchecked Sendable {
         for type in types { arguments += ["--exclude-ext", type] }
         for folder in codeRoots { arguments += ["--code-root", folder.path] }
         for folder in codeExcluded { arguments += ["--code-exclude", folder.path] }
+        // Dev runs can give the helper more (-debugHelperArgs "--time-limit 0": its watchdog stops on every file).
+        if UserDefaults.standard.string(forKey: "defaultsSuite") != nil,
+           let extra = UserDefaults.standard.string(forKey: "debugHelperArgs") {
+            arguments += extra.split(separator: " ").map(String.init)
+        }
         process.arguments = arguments + roots.map(\.path)
         process.environment = ProcessInfo.processInfo.environment.merging(["DIGUP_MODELS": modelsDirectory.path]) { $1 }
         process.qualityOfService = .utility
@@ -524,6 +533,19 @@ nonisolated final class Engine: @unchecked Sendable {
             $0.code.unreadableRoots = []
         }
         log("indexer: started (pid \(process.processIdentifier))")
+    }
+
+    /// Asks the helper to stop (it does between files) and ends it if it's still there some seconds later: a helper
+    /// stuck in one file never gets to the next, and Pause or a change of folders has to work anyway. What it was
+    /// reading is read again next time.
+    private func stopHelper(within seconds: Double = 15) {
+        send("stop")
+        guard let process = helper else { return }
+        indexQueue.asyncAfter(deadline: .now() + seconds) { [self] in
+            guard helper === process, process.isRunning else { return }
+            log("indexer: still running \(Int(seconds)) s after stop; ending it")
+            process.terminate()
+        }
     }
 
     private func send(_ command: String) {
@@ -595,6 +617,8 @@ nonisolated final class Engine: @unchecked Sendable {
             }
             if !folders.isEmpty { log("indexer: not connected: \(folders.map(tildePath))") }
             if !unreadable.isEmpty { log("indexer: no access: \(unreadable.map(tildePath))") }
+        case "stopped":
+            log("indexer: skipped \(tildePath(event["path"] as? String ?? "?")): it \(event["why"] as? String ?? "")")
         case "pruned":
             log("indexer: \(int("files")) files under folders no longer chosen left the index")
         case "reindex":
@@ -635,6 +659,8 @@ nonisolated final class Engine: @unchecked Sendable {
             }
             if !folders.isEmpty { log("indexer: code folders not connected: \(folders.map(tildePath))") }
             if !unreadable.isEmpty { log("indexer: no access to code folders: \(unreadable.map(tildePath))") }
+        case "stopped":
+            log("indexer: skipped \(tildePath(event["path"] as? String ?? "?")): it \(event["why"] as? String ?? "")")
         case "pruned":
             log("indexer: \(int("files")) files under code folders no longer chosen left the code index")
         case "reindex":
@@ -685,6 +711,11 @@ nonisolated final class Engine: @unchecked Sendable {
             // The folders changed: a new helper with the new ones.
             restartHelper = false
             startHelper()
+        } else if status == Self.stoppedOnFile {
+            // Its watchdog ended it on a file whose reading ran away: the next one skips that file and goes on. Not
+            // over and over, though, if something else is wrong.
+            watchdogStops = watchdogStops.filter { Date().timeIntervalSince($0) < 600 } + [Date()]
+            if watchdogStops.count <= 3 { startHelper() } else { log("indexer: stopped on files 4 times in 10 min") }
         } else if syncWantedAt != nil, status == 0 {
             // A sync asked for while it was on its way out still has to happen.
             startHelper()
@@ -722,7 +753,7 @@ nonisolated final class Engine: @unchecked Sendable {
         update { $0.paused = paused }
         log(paused ? "indexing paused" : "indexing resumed")
         indexQueue.async { [self] in
-            if paused { send("stop") } else { startHelper() }
+            if paused { stopHelper() } else { startHelper() }
         }
     }
 

@@ -48,6 +48,20 @@ import WinSDK
         #expect(try store.pendingCount() == 2)
     }
 
+    @Test func aFileTheHelperStoppedOnIsNotReadAgain() throws {
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("/a/stuck.pdf", inode: 1))
+        let book = try store.insert(file("/a/book.pdf", inode: 2))
+        try store.finish(book, state: "partial", info: ["read_to": "30", "read_end": "463"])
+        #expect(try store.markStopped("/a/stuck.pdf", why: "took more than 15 minutes to read"))
+        #expect(try store.markStopped("/a/book.pdf", why: "took more than 15 minutes to read"))
+        #expect(try !store.markStopped("/a/gone.pdf", why: "took more than 15 minutes to read"))
+        #expect(try store.pendingCount() == 0)
+        #expect(try store.unfinishedCount().files == 0)   // the book keeps its first pages and isn't finished again
+        let states = Dictionary(uniqueKeysWithValues: try store.files(under: ["/a"]).map { ($0.path, $0.state) })
+        #expect(states == ["/a/stuck.pdf": "failed", "/a/book.pdf": "done"])
+    }
+
     @Test func modelFileHashesStreamInPieces() throws {
         let small = folder.appendingPathComponent("abc")
         try Data("abc".utf8).write(to: small)

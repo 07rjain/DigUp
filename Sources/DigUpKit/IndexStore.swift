@@ -383,6 +383,21 @@ public final class IndexStore {
                    [.text(state), .optional(detail), .optional(json), .double(Date().timeIntervalSince1970), .int(id)])
     }
 
+    /// A file the indexing helper had to stop on (reading it ran away): it isn't read again until it changes. A long
+    /// file that was being finished keeps what was read of it. False when no file has that path.
+    @discardableResult
+    public func markStopped(_ path: String, why: String) throws -> Bool {
+        var found: (id: Int64, state: String)?
+        try db.query("SELECT id, state FROM files WHERE path = ?", [.text(path)]) { found = ($0.int(0), $0.text(1) ?? "") }
+        guard let found else { return false }
+        if found.state == "partial" {
+            try finish(found.id, state: "done", detail: "The rest couldn't be read: it \(why)")
+        } else {
+            try finish(found.id, state: "failed", detail: "It \(why)")
+        }
+        return true
+    }
+
     // MARK: Segments
 
     /// Adds a segment; `text` goes into keyword search (normalized, see `SearchText`), `vector` into meaning search.

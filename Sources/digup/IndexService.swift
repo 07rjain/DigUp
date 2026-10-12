@@ -40,6 +40,8 @@ final class IndexService: @unchecked Sendable {
     private let main: Part
     /// The code index (`--code-root`), when there are code folders.
     private let code: Part?
+    /// The index folder (where `Watchdog` leaves a note about a file it stopped on).
+    private let folder: URL
     private let model: SharedEmbedder
     /// The last report of folders that aren't there or can't be read, by index (said again only when it changes).
     private var unavailable: [Bool: (missing: [String], unreadable: [String])] = [:]
@@ -58,10 +60,11 @@ final class IndexService: @unchecked Sendable {
     private var yieldAt = Date.distantPast
     private let wake = DispatchSemaphore(value: 0)
 
-    init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
-         newFilesLimit: Int, linger: Double) {
+    init(main: Part, code: Part?, folder: URL, model: SharedEmbedder, modelReady: @escaping () -> Bool,
+         backfill: Bool, newFilesLimit: Int, linger: Double) {
         self.main = main
         self.code = code
+        self.folder = folder
         self.model = model
         self.modelReady = modelReady
         self.backfillAllowed = backfill
@@ -74,6 +77,13 @@ final class IndexService: @unchecked Sendable {
     func serve() -> Int32 {
         removeStaleScratchFolders()
         do {
+            // A file an earlier helper had to stop on (`Watchdog`) isn't read again until it changes.
+            if let stopped = StoppedFile.take(from: folder), let path = stopped.path {
+                for part in parts {
+                    guard try part.store.markStopped(path, why: stopped.why) else { continue }
+                    emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code])
+                }
+            }
             for part in parts {
                 try part.indexer.checkModel()   // a new model: everything is queued again
                 if let keepOnly = part.keepOnly {
