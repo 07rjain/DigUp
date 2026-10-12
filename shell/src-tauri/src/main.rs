@@ -483,7 +483,8 @@ fn watch_folders(app: &AppHandle) {
         let app = app.clone();
         move || run_index(&app)
     };
-    *shell.watcher.lock().unwrap() = Some(FolderWatcher::start(&folders, shell.options.index_folder(), changed));
+    let skipped = shell.settings.lock().unwrap().skipped.iter().map(PathBuf::from).collect();
+    *shell.watcher.lock().unwrap() = Some(FolderWatcher::start(&folders, skipped, shell.options.index_folder(), changed));
     run_index(app);
 }
 
