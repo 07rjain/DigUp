@@ -51,8 +51,12 @@ if [[ "$(git -C "$SOURCE" rev-parse HEAD)" != "$COMMIT" ]]; then
   exit 1
 fi
 # Without the patch, every input token costs 1 MiB of logits that an embedding model never produces (262k vocabulary).
-if git -C "$SOURCE" apply --check "../../$PATCH" 2>/dev/null; then
-  git -C "$SOURCE" apply "../../$PATCH"
+# Its path is absolute: git -C reads a relative one from the source folder, which LLAMA_SOURCE can put anywhere.
+if git -C "$SOURCE" apply --check "$PWD/$PATCH" 2>/dev/null; then
+  git -C "$SOURCE" apply "$PWD/$PATCH"
+elif ! git -C "$SOURCE" apply --reverse --check "$PWD/$PATCH" 2>/dev/null; then
+  echo "$PATCH doesn't apply to $SOURCE, and isn't applied already: not building it" >&2
+  exit 1
 fi
 
 if ! command -v cmake > /dev/null; then
