@@ -83,8 +83,25 @@ if [[ $OS == Darwin ]]; then
     $B/vendor/hash/libvendor-hash.a
 else
   GENERATOR=$(command -v ninja > /dev/null && echo Ninja || echo "Unix Makefiles")
+  COMPILERS=()
   if [[ $OS == MINGW* || $OS == MSYS* ]]; then
     export CC=cl CXX=cl   # MSVC, not whatever else bash finds first
+  elif [[ $(uname -m) == aarch64 && -z "${CC:-}" ]]; then
+    # The arm64 CPU variants go up to armv9.2 with SME (-march=...+sme), which GCC before 14 doesn't know (Ubuntu
+    # 24.04's is 13): the first C compiler here that takes it, with its C++ one. Named to CMake, so a build folder
+    # set up with another compiler is set up again.
+    for pair in cc:c++ gcc-14:g++-14 gcc-15:g++-15 clang:clang++; do
+      if command -v "${pair%%:*}" > /dev/null && command -v "${pair##*:}" > /dev/null \
+        && echo 'int main(void) { return 0; }' | "${pair%%:*}" -x c -march=armv9.2-a+sme -c -o /dev/null - 2>/dev/null; then
+        export CC=${pair%%:*} CXX=${pair##*:}
+        COMPILERS=("-DCMAKE_C_COMPILER=$CC" "-DCMAKE_CXX_COMPILER=$CXX")
+        break
+      fi
+    done
+    if [[ -z "${CC:-}" ]]; then
+      echo "llama.cpp's arm64 CPU variants need GCC 14 or Clang (armv9.2's SME): install gcc-14 or clang, or set CC and CXX" >&2
+      exit 1
+    fi
   fi
   case $FLAVOR in
     cuda) GPU=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-native}") ;;
@@ -92,7 +109,7 @@ else
     *) GPU=() ;;
   esac
   # Shared libraries, the backends as modules (every CPU variant, so one build fits any x86-64 or arm64 machine).
-  cmake -S "$SOURCE" -B "$BUILD" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release \
+  cmake -S "$SOURCE" -B "$BUILD" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release "${COMPILERS[@]}" \
     -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF "${GPU[@]}" \
     -DLLAMA_BUILD_MTMD=ON -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF \
     -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF \
@@ -116,4 +133,4 @@ cp "$SOURCE/include/llama.h" "$SOURCE"/ggml/include/*.h "$SOURCE/tools/mtmd/mtmd
 printf '// Written by scripts/build-llama.sh.\n#define LLAMA_BUILD_TAG "%s"\n' "$TAG" > "$OUT/include/llama-build.h"
 touch Sources/LlamaRuntime/LlamaEmbedder.swift
 echo "$STAMP" > "$OUT/BUILD"
-echo "Built llama.cpp $TAG (patched, $FLAVOR) into $OUT"
+echo "Built llama.cpp $TAG (patched, $FLAVOR${CC:+, $CC}) into $OUT"
