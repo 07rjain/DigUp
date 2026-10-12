@@ -171,18 +171,31 @@ final class SettingsState {
 private struct SettingsPane: View {
     let tab: SettingsTab
     let state: SettingsState
+    /// The content's own height. The window is that tall up to what the screen has room for, and scrolls past it (a
+    /// long list of folders ran it off the screen, Add Folders… with it).
+    @State private var height: CGFloat?
 
     var body: some View {
-        Group {
-            switch tab {
-            case .general: GeneralSettings(state: state)
-            case .folders: FolderSettings(state: state)
-            case .code: CodeSettings(state: state)
-            case .storage: StorageSettings(state: state)
+        ScrollView(.vertical) {
+            Group {
+                switch tab {
+                case .general: GeneralSettings(state: state)
+                case .folders: FolderSettings(state: state)
+                case .code: CodeSettings(state: state)
+                case .storage: StorageSettings(state: state)
+                }
             }
+            .frame(width: 580)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         }
-        .frame(width: 580)
-        .fixedSize(horizontal: false, vertical: true)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 580, height: height.map { min($0, Self.tallest) })
+    }
+
+    /// The screen's room below the menu bar, less the window's title bar and tabs and a margin.
+    private static var tallest: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 800) - 140
     }
 }
 
