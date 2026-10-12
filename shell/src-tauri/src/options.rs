@@ -31,6 +31,9 @@ pub struct Options {
     pub debug_quit: bool,
     /// Debug runs: show the panel at launch and keep it up when it loses focus.
     pub debug_show: bool,
+    /// A desktop shortcut's command (hotkey.rs): show or hide the panel of the DigUp already running, or start DigUp
+    /// with the panel up.
+    pub toggle: bool,
 }
 
 impl Options {
@@ -47,6 +50,7 @@ impl Options {
             debug_query: None,
             debug_quit: false,
             debug_show: false,
+            toggle: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -64,6 +68,7 @@ impl Options {
                 "--debug-query" => options.debug_query = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
+                "--toggle" => options.toggle = true,
                 _ => return Err(format!("unknown argument {arg}")),
             }
         }

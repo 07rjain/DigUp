@@ -5,11 +5,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod helper;
+mod hotkey;
 mod options;
 mod settings;
 mod watcher;
 
 use helper::{IndexService, Launch, ModelDownload, SearchService};
+use hotkey::Method;
 use options::{Options, DEFAULT_HOTKEY};
 use serde_json::{json, Value};
 use settings::Settings;
@@ -33,6 +35,8 @@ struct Shell {
     options: Options,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    /// How the panel's shortcut reaches DigUp on this desktop (hotkey.rs).
+    shortcut: Method,
     search: SearchService,
     index: IndexService,
     model: ModelDownload,
@@ -64,6 +68,17 @@ impl Shell {
     fn hotkey(&self) -> String {
         let chosen = self.settings.lock().unwrap().hotkey.clone();
         self.options.hotkey.clone().unwrap_or(if chosen.is_empty() { DEFAULT_HOTKEY.to_string() } else { chosen })
+    }
+
+    /// The shortcut as people read it: GNOME's, once DigUp's custom shortcut is there (it may have been changed there).
+    fn hotkey_text(&self) -> String {
+        #[cfg(target_os = "linux")]
+        if self.shortcut == Method::Gnome {
+            if let Some(binding) = hotkey::gnome::binding() {
+                return hotkey::gnome::shown(&binding);
+            }
+        }
+        shortcut_text(&self.hotkey())
     }
 
     /// A background helper (indexing, the download), below the person's own programs for the processor.
@@ -151,7 +166,8 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
     json!({
         "offered": offered.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>(),
         "chosen": shell.folders(),
-        "hotkey": shortcut_text(&shell.hotkey()),
+        "hotkey": shell.hotkey_text(),
+        "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
         "model": shell.model_state.lock().unwrap().clone(),
         "auto": shell.options.debug_setup,
     })
@@ -171,11 +187,21 @@ async fn pick_folders(app: AppHandle) -> Vec<String> {
 /// Setup's last step: the folders are saved and indexing starts (once the model is in).
 #[tauri::command]
 fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let first = !shell.is_set_up();
     {
         let mut settings = shell.settings.lock().unwrap();
         settings.folders = folders;
         settings.set_up = true;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    // The first setup adds the shortcut to GNOME's settings; a later one (Choose Folders…) leaves it as the person has
+    // it there.
+    #[cfg(target_os = "linux")]
+    if first && shell.shortcut == Method::Gnome {
+        if let Err(error) = hotkey::gnome::bind(&shell.hotkey(), &hotkey::toggle_command()) {
+            set_status(&app, &format!("The shortcut couldn't be added to GNOME's settings: {error}"));
+        }
     }
     apply_folders(&app);
     if let Some(window) = app.get_webview_window("setup") {
@@ -239,8 +265,20 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // A desktop shortcut's `--toggle` while DigUp runs goes to it before this process starts GTK (hotkey.rs).
+    #[cfg(target_os = "linux")]
+    if options.toggle && hotkey::hand_over() {
+        return;
+    }
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show_panel(app)))
+        // A second launch shows the panel, or toggles it for a desktop shortcut's `--toggle`.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if args.iter().any(|arg| arg == "--toggle") {
+                toggle_panel(app)
+            } else {
+                show_panel(app)
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -319,6 +357,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         options,
         settings: Mutex::new(settings),
         settings_path,
+        shortcut: hotkey::method(),
         search,
         index,
         model,
@@ -336,10 +375,18 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     if let Err(error) = make_tray(&handle, &shell) {
         eprintln!("digup-shell: no tray icon: {error}");
     }
-    let hotkey = shell.hotkey();
-    if let Err(error) = app.global_shortcut().register(hotkey.as_str()) {
-        set_status(&handle, &format!("The shortcut {} is taken", shortcut_text(&hotkey)));
-        eprintln!("digup-shell: can't use {hotkey} as the shortcut: {error}");
+    match shell.shortcut {
+        Method::Grab => {
+            let hotkey = shell.hotkey();
+            if let Err(error) = app.global_shortcut().register(hotkey.as_str()) {
+                set_status(&handle, &format!("The shortcut {} is taken", shortcut_text(&hotkey)));
+                eprintln!("digup-shell: can't use {hotkey} as the shortcut: {error}");
+            }
+        }
+        // GNOME runs DigUp's custom shortcut (added at setup); its command follows DigUp when DigUp moves.
+        #[cfg(target_os = "linux")]
+        Method::Gnome if shell.is_set_up() => hotkey::gnome::refresh(&hotkey::toggle_command()),
+        _ => {}
     }
 
     // The search service starts now (the first search is then quick); the model is checked (and fetched if it's
@@ -360,7 +407,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         show_setup(&handle)?;
     }
-    if shell.options.debug_show {
+    // Started by the shortcut (DigUp wasn't running): the panel comes up as it would have.
+    if shell.options.debug_show || shell.options.toggle {
         show_panel(&handle);
     }
     Ok(())
@@ -472,6 +520,9 @@ fn show_panel(app: &AppHandle) {
     let _ = panel.show();
     let _ = panel.set_focus();
     let _ = panel.emit("panel-shown", ());
+    if cfg!(debug_assertions) {
+        println!("panel: shown");
+    }
 }
 
 fn toggle_panel(app: &AppHandle) {
@@ -518,7 +569,7 @@ fn shortcut_text(accelerator: &str) -> String {
         .iter()
         .map(|part| match *part {
             "CommandOrControl" | "CmdOrCtrl" | "Control" => "Ctrl",
-            "Super" => "Win",
+            "Super" if cfg!(windows) => "Win",
             other => other,
         })
         .collect::<Vec<_>>()
@@ -529,7 +580,9 @@ fn shortcut_text(accelerator: &str) -> String {
 
 fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
-    let search = MenuItem::with_id(app, "search", "Search…", true, Some(shell.hotkey().as_str()))?;
+    // The shortcut beside Search… only where DigUp grabs it: elsewhere the desktop has it, maybe changed there.
+    let accelerator = (shell.shortcut == Method::Grab).then(|| shell.hotkey());
+    let search = MenuItem::with_id(app, "search", "Search…", true, accelerator.as_deref())?;
     let folders = MenuItem::with_id(app, "folders", "Choose Folders…", true, None::<&str>)?;
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;

@@ -733,6 +733,7 @@ dependencies = [
 name = "digup-shell"
 version = "0.1.0"
 dependencies = [
+ "gio",
  "libc",
  "notify",
  "serde",
@@ -744,6 +745,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tokio",
+ "zbus",
 ]
 
 [[package]]

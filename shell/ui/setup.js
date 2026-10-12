@@ -26,6 +26,7 @@ async function start() {
   showModel(info.model);
   tauri.event.listen("model", ({ payload }) => showModel(payload));
   showKeys(info.hotkey);
+  showShortcut(info.shortcut);
   if (!firstTime) page = 1;   // Choose Folders…: straight to the folders
   const asked = PAGES.indexOf(new URLSearchParams(location.search).get("page"));   // dev snapshots: ?page=folders
   if (asked >= 0) page = asked;
@@ -159,6 +160,21 @@ function showKeys(hotkey) {
   }));
   $("reveal-key").textContent = isMac ? "⌘↩" : "Ctrl+↩";
   $("reveal-text").textContent = isMac ? "shows it in Finder" : isWindows ? "shows it in Explorer" : "shows it in its folder";
+}
+
+/// Where the shortcut lives on a desktop that keeps it itself (GNOME), or the command to give it (other Wayland desktops).
+function showShortcut(shortcut) {
+  const notes = {
+    gnome: "DigUp adds it to GNOME's keyboard shortcuts. To change it later: Settings → Keyboard → View and Customize " +
+      "Shortcuts → Custom Shortcuts.",
+    by_hand: "This desktop doesn't let apps set their own shortcuts. To open the panel with one, add a shortcut in " +
+      "its keyboard settings that runs:",
+  };
+  const note = notes[shortcut?.method];
+  $("shortcut-note").hidden = !note;
+  $("shortcut-note").textContent = note || "";
+  $("shortcut-command").hidden = shortcut?.method !== "by_hand";
+  $("shortcut-command").textContent = shortcut?.command || "";
 }
 
 function showModel(model) {

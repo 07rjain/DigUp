@@ -22,6 +22,11 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# GNOME's shortcut settings, and `--toggle` handed to the running DigUp (both already in Tauri's build on Linux).
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.18"
+zbus = "5"
+
 [profile.release]
 codegen-units = 1
 lto = true
