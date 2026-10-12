@@ -493,7 +493,7 @@ private struct StorageSettings: View {
 
     var body: some View {
         Form {
-            Section("Model") {
+            Section {
                 LabeledContent("EmbeddingGemma 2") {
                     Text("Google · Apache 2.0 · 865 MB")
                 }
@@ -503,6 +503,8 @@ private struct StorageSettings: View {
                         switch state.model.download.phase {
                         case .needed, .failed:
                             Button("Download") { state.model.download.start() }.controlSize(.small)
+                            Button("Use Files…") { state.model.download.chooseFiles(for: NSApp.keyWindow) }
+                                .controlSize(.small)
                         default:
                             EmptyView()
                         }
@@ -510,6 +512,25 @@ private struct StorageSettings: View {
                 }
                 LabeledContent("Location") {
                     PathButton(url: state.model.settings.modelsDirectory)
+                }
+            } header: {
+                Text("Model")
+            } footer: {
+                if !state.model.download.isReady {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("If your network blocks Hugging Face, download the two files on another network and "
+                             + "click Use Files… to choose them. DigUp checks them before it uses them.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("Copy Links") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ModelDownload.links, forType: .string)
+                        }
+                        .controlSize(.small)
+                        .help("Copies the addresses of the two files")
+                    }
                 }
             }
             Section("Index") {

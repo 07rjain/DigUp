@@ -54,6 +54,7 @@ import SwiftUI
 ///     -debugAdd YES           after the snapshot, press Add Folders' Add (or the code sheet's) and log what it applied
 ///     -debugFocus YES         with -debugWindow search: the field has the cursor (its ring shows) in the snapshot
 ///     -debugUpdateCheck YES   check for updates in the background a second after launch, as the daily check does
+///     -debugUseModelFiles a:b take these files as the model, as Use Files… does, a second after launch
 ///     -debugQuitAfter S       log the menu and quit S seconds after launch (a downloaded update installs on quit)
 ///     -debugWaitForIndex YES  wait for the model and an idle index with nothing waiting, then search for
 ///                             -debugQuery in the panel (<snapshot>-5-panel.png), as -debugOnboarding auto ends
@@ -108,6 +109,12 @@ enum DebugHooks {
                 app.applyCodeFolders(folders == "off" ? [] : folders.split(separator: ":").map {
                     AppSettings.folderURL(String($0))
                 }, excluded: [])
+            }
+        }
+        if let files = defaults.string(forKey: "debugUseModelFiles") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                log("debug: model files chosen: \(files)")
+                app.model.download.use(files.split(separator: ":").map { URL(fileURLWithPath: String($0)) })
             }
         }
         if defaults.bool(forKey: "debugUpdateCheck") {

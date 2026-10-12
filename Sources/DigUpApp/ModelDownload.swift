@@ -1,3 +1,4 @@
+import AppKit
 import DigUpKit
 import Foundation
 import Observation
@@ -15,6 +16,7 @@ import Observation
 /// This is the app's only network use. It starts when onboarding's Get Started is clicked, or at launch when a set-up
 /// app finds its model missing (an update that brings a new model). A file that's already in the Hugging Face cache
 /// (`hf download`, llama.cpp users) is copied from there instead (an APFS clone: no time, no space), and checked the same.
+/// So are files chosen by hand (`use`), for networks that block Hugging Face.
 @Observable
 final class ModelDownload {
     enum Phase: Equatable {
@@ -42,6 +44,8 @@ final class ModelDownload {
     @ObservationIgnored private var fileStarted = Date()
     @ObservationIgnored private var lastLogged = Date.distantPast
     @ObservationIgnored private var attempt = 0
+    /// Files whose `.partial` was chosen by hand (`use`): one that fails its check says so rather than downloading.
+    @ObservationIgnored private var chosen = Set<String>()
 
     init(folder: URL) {
         self.folder = folder
@@ -206,7 +210,11 @@ final class ModelDownload {
                     log("model: \(file.name) \(good ? "checked" : "FAILED its check (\(size) of \(file.bytes) bytes)") in "
                         + "\(ms(since: started)), downloaded in \(String(format: "%.1f s", seconds))")
                     if good {
+                        chosen.remove(file.name)
                         next()
+                    } else if chosen.remove(file.name) != nil {
+                        // Chosen by hand: say so, rather than download what the network may block.
+                        phase = .failed("The chosen \(file.name) isn't the right file")
                     } else {
                         failedChecks += 1
                         received = bytesOnDisk()
@@ -238,6 +246,81 @@ final class ModelDownload {
             retryWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
+    }
+
+    // MARK: Files chosen by hand
+
+    /// The model's two files, got some other way (on another network, from a mirror, a colleague's copy) where
+    /// Hugging Face is blocked. Each goes where a download would put it (`<name>.partial`; an APFS clone when it can
+    /// be) and is checked the same way, size and SHA-256, before it's used. A file counts by its size, and so by its
+    /// name only at the right size (a smaller one would be taken for a download to resume). What's still missing
+    /// afterwards downloads as usual.
+    func use(_ urls: [URL]) {
+        var picked: [(file: ModelFiles.File, url: URL)] = []
+        var problem = "Those aren't the model's files"
+        for url in urls {
+            let size = FileFetcher.size(of: url)
+            guard let file = ModelFiles.all.first(where: { $0.bytes == size }) else {
+                if let named = ModelFiles.all.first(where: { $0.name == url.lastPathComponent }) {
+                    problem = "The chosen \(named.name) is \(bytes(size)), not \(bytes(named.bytes))"
+                }
+                continue
+            }
+            let wanted = ModelFiles.missing(in: folder).contains(file) && !picked.contains { $0.file == file }
+            if wanted { picked.append((file, url)) }
+        }
+        guard !picked.isEmpty else {
+            log("model: none of the chosen files is a model file (\(urls.map(\.lastPathComponent))): \(problem)")
+            if phase != .ready, !isActive { phase = .failed(problem) }
+            return
+        }
+        // What was downloading stops: these take its place (a stopped fetcher's callbacks are ignored).
+        fetcher?.cancel()
+        fetcher = nil
+        attempt += 1
+        retryWork?.cancel()
+        phase = .verifying
+        DispatchQueue.global(qos: .utility).async { [folder, picked] in
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var copied: [String] = []
+            for (file, url) in picked {
+                let partial = folder.appendingPathComponent(file.name + ".partial")
+                try? FileManager.default.removeItem(at: partial)
+                if (try? FileManager.default.copyItem(at: url, to: partial)) != nil { copied.append(file.name) }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                log("model: chosen by hand: \(copied.joined(separator: ", "))")
+                chosen.formUnion(copied)
+                phase = .needed
+                start()   // checks them, and downloads what's still missing
+            }
+        }
+    }
+
+    /// An open panel for `use`, as a sheet on `window` when there is one.
+    func chooseFiles(for window: NSWindow?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Use"
+        panel.message = "Choose the model files you downloaded: "
+            + ModelFiles.all.map(\.name).joined(separator: " and ") + "."
+        let finish = { [weak self] (response: NSApplication.ModalResponse) in
+            guard response == .OK else { return }
+            self?.use(panel.urls)
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(panel.runModal())
+        }
+    }
+
+    /// Where the two files download from (the pinned revision), one a line: to fetch them on another network.
+    static var links: String {
+        ModelFiles.all.map(\.url.absoluteString).joined(separator: "\n")
     }
 
     // MARK: Disk
