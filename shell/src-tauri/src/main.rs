@@ -144,9 +144,11 @@ async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, Stri
 #[tauri::command]
 async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
+    // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
+    let index = shell.index_arguments();
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = std::process::Command::new(&helper);
-        command.arg("estimate").args(&folders).arg("--json");
+        command.arg("estimate").args(&folders).args(&index).arg("--json");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
