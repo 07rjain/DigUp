@@ -18,8 +18,9 @@ import WinSDK
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
 /// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
 /// "sync code"); then the rest of long files (`Indexer.finishLongFiles`) under the same rules. Between batches it
-/// yields to a new sync, to stop, and to "backfill off". When it's done it keeps a warm worker for `linger` seconds
-/// (screenshots come in bursts), then exits.
+/// yields to stop and to "backfill off" at once, and to a new sync once indexing has had about as long as the last
+/// sync took (`yieldAt`). When it's done it keeps a warm worker for `linger` seconds (screenshots come in bursts),
+/// then exits.
 ///
 /// Before the model has downloaded it only syncs (file names are searchable at once), says it's "waiting", and exits.
 /// Folders that aren't there (an unplugged drive) or can't be read are skipped, and what was indexed from them stays.
@@ -51,6 +52,10 @@ final class IndexService: @unchecked Sendable {
     private var codeSyncRequested = true
     private var stopRequested = false
     private var backfillAllowed: Bool
+    /// A sync asked for while files are being indexed waits until then. A crawl of a big folder can take minutes, and
+    /// a folder that keeps changing asks for the next one meanwhile: yielding at once, every pass went back to crawling
+    /// before a single file was read. Indexing gets at least as long as the sync before it (2 s at the least).
+    private var yieldAt = Date.distantPast
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
@@ -184,6 +189,10 @@ final class IndexService: @unchecked Sendable {
 
     private func sync(_ part: Part, into newFiles: inout Set<Int64>) {
         let started = Date()
+        defer {
+            let took = Date().timeIntervalSince(started)
+            lock.withLock { yieldAt = Date() + max(took, 2) }
+        }
         do {
             let summary = try part.indexer.sync(availableRoots(part))
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
@@ -208,7 +217,8 @@ final class IndexService: @unchecked Sendable {
         do {
             let states = try part.indexer.run(only: ids, shouldStop: { [self] in
                 lock.withLock {
-                    syncRequested || stopRequested || (!isNew && !backfillAllowed) || (part.code && codeSyncRequested)
+                    stopRequested || (!isNew && !backfillAllowed)
+                        || Date() >= yieldAt && (syncRequested || part.code && codeSyncRequested)
                 }
             }, onEvent: { event in
                 emit(["event": "file", "new": isNew, "done": event.done, "total": event.total, "path": event.path,
@@ -232,7 +242,10 @@ final class IndexService: @unchecked Sendable {
         let started = Date()
         do {
             let states = try main.indexer.finishLongFiles(shouldStop: { [self] in
-                lock.withLock { syncRequested || codeSyncRequested && code != nil || stopRequested || !backfillAllowed }
+                lock.withLock {
+                    stopRequested || !backfillAllowed
+                        || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil)
+                }
             }, onStep: { step in
                 emit(["event": "rest", "done": step.done, "total": step.total, "files": step.files, "path": step.path,
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])

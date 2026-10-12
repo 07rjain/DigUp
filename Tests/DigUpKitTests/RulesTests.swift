@@ -138,4 +138,27 @@ import Testing
         let report = Crawler.crawl([folder, inner], options: IndexOptions())
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
     }
+
+    @Test func changesCountOnlyWhereTheCrawlGoes() {
+        let home = "/Users/me"
+        func walked(_ path: String, root: String = home, skipping excluded: [String] = []) -> Bool {
+            Rules.isWalked(path, root: root, home: home, excluded: excluded)
+        }
+        #expect(walked("/Users/me/Documents/trip.pdf"))
+        #expect(walked("/Users/me"))
+        // DigUp's own index and log, with the home folder chosen: a change there asked for a sync, whose log line was
+        // a change again.
+        #expect(!walked("/Users/me/Library/Application Support/DigUp/index.noindex/app.log"))
+        #expect(!walked("/Users/me/Library/Caches/com.apple.Safari/Cache.db"))
+        #expect(!walked("/Users/me/Projects/site/node_modules/left-pad/index.js"))
+        #expect(!walked("/Users/me/Movies/Exports.noindex/clip.mov"))
+        #expect(!walked("/Users/me/Documents/.git/index"))
+        #expect(!walked("/Users/me/Downloads/big.iso", skipping: ["/Users/me/Downloads"]))
+        // A folder chosen inside ~/Library (iCloud Drive) is walked.
+        let drive = "/Users/me/Library/Mobile Documents/com~apple~CloudDocs"
+        #expect(walked(drive + "/Notes/plan.md", root: drive))
+        #expect(!walked("/Users/me/Documents/trip.pdf", root: drive))
+        #expect(walked("/Users/me/Documentsx/a.pdf", root: "/Users/me/Documentsx"))
+        #expect(!walked("/Users/me/Documentsx/a.pdf", root: "/Users/me/Documents"))
+    }
 }

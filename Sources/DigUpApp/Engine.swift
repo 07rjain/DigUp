@@ -111,6 +111,9 @@ nonisolated final class Engine: @unchecked Sendable {
 
     // watchQueue only
     private var watcher: FolderWatcher?
+    /// The chosen folders and the skipped ones as the watcher reports paths (real paths too: /private/var for /var).
+    private var watchedRoots: [String] = []
+    private var watchedSkips: [String] = []
     private var syncDebounce: DispatchWorkItem?
     private var codeWatcher: FolderWatcher?
     private var codeSyncDebounce: DispatchWorkItem?
@@ -377,7 +380,13 @@ nonisolated final class Engine: @unchecked Sendable {
     /// Watches the chosen folders that are there (a missing one is picked up when a drive connects).
     private func startWatching() {
         watcher = nil
-        let present = lock.withLock { roots }.filter(AppSettings.isFolder)
+        let (roots, excluded) = lock.withLock { (self.roots, self.excluded) }
+        let present = roots.filter(AppSettings.isFolder)
+        func spellings(_ folders: [URL]) -> [String] {
+            Array(Set(folders.flatMap { [$0.path, FolderSelection.realPath($0.path)] }))
+        }
+        watchedRoots = spellings(present)
+        watchedSkips = spellings(excluded)
         guard !present.isEmpty else { return }
         watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths in
             self?.foldersChanged(paths)
@@ -435,6 +444,11 @@ nonisolated final class Engine: @unchecked Sendable {
     /// FSEvents, on watchQueue. Waits for things to settle (a copy in progress, a burst of screenshots), then asks
     /// the helper to sync; a running batch yields to that at its next boundary.
     private func foldersChanged(_ paths: [String]) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let paths = paths.filter { path in
+            watchedRoots.contains { Rules.isWalked(path, root: $0, home: home, excluded: watchedSkips) }
+        }
+        guard !paths.isEmpty else { return }
         log("watch: \(paths.count) changed (\((paths.first as NSString?)?.lastPathComponent ?? ""))")
         syncDebounce?.cancel()
         let work = DispatchWorkItem { [self] in
