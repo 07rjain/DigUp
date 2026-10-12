@@ -7,7 +7,8 @@ Search the files on your Mac by what's in them, with Google DeepMind's
 <a href="https://huggingface.co/google/embeddinggemma-2">EmbeddingGemma 2</a>.</p>
 
 <p align="center"><a href="https://github.com/ARahim3/DigUp/releases/latest"><b>Download for Mac</b></a> · Apple Silicon,
-macOS 14 or later · Free and open source</p>
+macOS 14 or later · Free and open source<br>
+<sub>Windows and Linux versions are on the way.</sub></p>
 
 <p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed"></p>
 
@@ -143,6 +144,8 @@ holds the queries ranking changes are measured with.
 
 **How is this different from Spotlight?** Spotlight finds files by their names, text and metadata. DigUp also finds
 them by what they show or say, and takes you to the page or moment. The two work fine side by side.
+
+**Windows or Linux?** Both are on the way.
 
 **Why is the download 865 MB?** That's the model: the text part (310 MB) and the image and audio encoders (555 MB).
 The app itself is about 20 MB.
