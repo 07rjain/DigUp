@@ -56,6 +56,17 @@ html, body {
   overflow: hidden;
 }
 
+/* Wayland: the window fills the screen and the panel sits where the Mac app puts it, centered a fifth of the way down,
+   with a shadow of its own (panel.js sets its height). */
+.fills-screen .panel {
+  position: absolute;
+  top: 20vh;
+  left: calc(50% - 390px);
+  width: 780px;
+  height: 56px;
+  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.3), 0 3px 12px rgba(0, 0, 0, 0.16);
+}
+
 /* The field */
 
 .field {

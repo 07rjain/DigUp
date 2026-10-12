@@ -16,6 +16,8 @@ const FIELD_HEIGHT = 56;
 const PANEL_HEIGHT = 480;
 const WEAKER = "\u0000weaker";     // the selectable row that folds and unfolds the weaker matches
 const isMac = /Mac/.test(navigator.platform);
+// Wayland: the window fills the screen and this page places the panel (the shell's wayland.rs).
+const fillsScreen = new URLSearchParams(location.search).has("fills");
 const isWindows = /Win/.test(navigator.platform);
 const MOD = isMac ? "⌘" : "Ctrl+";
 const FILE_MANAGER = isMac ? "Finder" : isWindows ? "Explorer" : "Files";
@@ -27,7 +29,7 @@ const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: 
                      video: "Video", code: "Code" };
 
 const $ = (id) => document.getElementById(id);
-const $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
+const $panel = $("panel"), $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
 const $footer = $("footer"), $summary = $("summary"), $keys = $("keys"), $activity = $("activity");
 
 const state = {
@@ -153,12 +155,30 @@ function revealSelected() {
 
 // MARK: Drawing
 
+/// The panel's height: the window's, or in a window that fills the screen the panel's own, whose place the shell is
+/// told so that only the panel takes the pointer.
+function fit() {
+  if (!fillsScreen) {
+    invoke("panel_height", { height: state.height }).catch(() => {});
+    return;
+  }
+  $panel.style.height = `${state.height}px`;
+  const { left, top, width, height } = $panel.getBoundingClientRect();
+  invoke("panel_area", { x: left, y: top, width, height }).catch(() => {});
+}
+
+if (fillsScreen) {
+  document.documentElement.classList.add("fills-screen");
+  window.addEventListener("resize", fit);
+  fit();
+}
+
 function render() {
   const empty = state.phase === "empty";
   const height = empty ? FIELD_HEIGHT : PANEL_HEIGHT;
   if (height !== state.height) {
     state.height = height;
-    invoke("panel_height", { height }).catch(() => {});
+    fit();
   }
   $body.hidden = empty;
   $footer.hidden = empty;

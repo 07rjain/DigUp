@@ -734,6 +734,7 @@ name = "digup-shell"
 version = "0.1.0"
 dependencies = [
  "gio",
+ "gtk",
  "libc",
  "notify",
  "serde",

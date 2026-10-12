@@ -9,6 +9,7 @@ mod hotkey;
 mod options;
 mod settings;
 mod watcher;
+mod wayland;
 
 use helper::{IndexService, Launch, ModelDownload, SearchService};
 use hotkey::Method;
@@ -37,6 +38,8 @@ struct Shell {
     settings_path: PathBuf,
     /// How the panel's shortcut reaches DigUp on this desktop (hotkey.rs).
     shortcut: Method,
+    /// The panel's window fills the screen and the page places the panel (Wayland: wayland.rs).
+    fills_screen: bool,
     search: SearchService,
     index: IndexService,
     model: ModelDownload,
@@ -239,6 +242,18 @@ fn panel_height(app: AppHandle, height: f64) {
     }
 }
 
+/// Where the page drew the panel in a window that fills the screen (wayland.rs): only there does it take the pointer.
+#[tauri::command]
+fn panel_area(app: AppHandle, x: f64, y: f64, width: f64, height: f64) {
+    #[cfg(target_os = "linux")]
+    if let Some(panel) = app.get_webview_window("panel") {
+        let area = (x.floor() as i32, y.floor() as i32, width.ceil() as i32, height.ceil() as i32);
+        wayland::set_area(&panel, area);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, x, y, width, height);
+}
+
 /// Debug runs: the query the panel types in when it loads (with setup, it comes later as a "debug-query" event).
 #[tauri::command]
 fn debug_query(shell: State<'_, Arc<Shell>>) -> Option<String> {
@@ -293,7 +308,7 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
-            debug_query, debug_report
+            panel_area, debug_query, debug_report
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -358,6 +373,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         settings: Mutex::new(settings),
         settings_path,
         shortcut: hotkey::method(),
+        fills_screen: wayland::fills_screen(),
         search,
         index,
         model,
@@ -370,7 +386,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     });
     app.manage(shell.clone());
 
-    make_panel(&handle)?;
+    make_panel(&handle, shell.fills_screen)?;
     // No tray (a session without a taskbar, a Linux desktop without one): the hotkey and the panel still work.
     if let Err(error) = make_tray(&handle, &shell) {
         eprintln!("digup-shell: no tray icon: {error}");
@@ -473,8 +489,9 @@ fn quit(app: &AppHandle) {
 
 // MARK: Windows
 
-fn make_panel(app: &AppHandle) -> tauri::Result<()> {
-    let panel = WebviewWindowBuilder::new(app, "panel", WebviewUrl::App("index.html".into()))
+fn make_panel(app: &AppHandle, fills_screen: bool) -> tauri::Result<()> {
+    let page = if fills_screen { "index.html?fills" } else { "index.html" };
+    let panel = WebviewWindowBuilder::new(app, "panel", WebviewUrl::App(page.into()))
         .title("DigUp")
         .inner_size(PANEL_WIDTH, FIELD_HEIGHT)
         .decorations(false)
@@ -490,6 +507,10 @@ fn make_panel(app: &AppHandle) -> tauri::Result<()> {
         .skip_taskbar(true)
         .visible(false)
         .build()?;
+    #[cfg(target_os = "linux")]
+    if fills_screen {
+        wayland::track(&panel);
+    }
     let app = app.clone();
     panel.on_window_event(move |event| {
         // Like Spotlight: it steps away when you click elsewhere.
@@ -508,8 +529,11 @@ fn show_panel(app: &AppHandle) {
         return;
     }
     let Some(panel) = app.get_webview_window("panel") else { return };
-    // On the screen with the pointer, centered, a fifth of the way down.
-    if let Ok(pointer) = app.cursor_position() {
+    // On the screen with the pointer, centered, a fifth of the way down: the page puts it there in a window that fills
+    // the screen (GTK keeps the window maximized while it's hidden).
+    if app.state::<Arc<Shell>>().fills_screen {
+        let _ = panel.maximize();
+    } else if let Ok(pointer) = app.cursor_position() {
         if let Ok(Some(screen)) = app.monitor_from_point(pointer.x, pointer.y) {
             let width = (PANEL_WIDTH * screen.scale_factor()) as i32;
             let x = screen.position().x + (screen.size().width as i32 - width) / 2;
