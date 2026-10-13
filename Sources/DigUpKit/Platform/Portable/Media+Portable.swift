@@ -158,10 +158,18 @@ extension VideoExtractor {
 
     /// The frame shown at `seconds`, its long side at most `pixels`, as a JPEG for a preview.
     static func frame(at seconds: Double, of url: URL, pixels: Int, to out: URL) async throws {
-        try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-ss", String(max(0, seconds)), "-i", url.path,
-                                       "-frames:v", "1", "-vf",
-                                       "scale='min(iw,\(pixels))':'min(ih,\(pixels))':force_original_aspect_ratio=decrease",
-                                       "-q:v", "3", "-y", out.path]) { _ in }
+        let at = String(max(0, seconds))
+        let rest = ["-frames:v", "1", "-vf",
+                    "scale='min(iw,\(pixels))':'min(ih,\(pixels))':force_original_aspect_ratio=decrease",
+                    "-q:v", "3", "-y", out.path]
+        do {
+            // Seeking before reading jumps to a keyframe near the moment: quick at any length.
+            try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-ss", at, "-i", url.path] + rest) { _ in }
+        } catch {
+            // A stream that sets up its decoder only at its start (some MPEG-TS) can't be read from a keyframe further
+            // in: ffmpeg fails, or writes a later frame. Read from the start to the moment instead.
+            try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-i", url.path, "-ss", at] + rest) { _ in }
+        }
         guard FileManager.default.fileExists(atPath: out.path) else {
             throw ExtractError.unreadable("no frame at \(seconds) s")
         }
