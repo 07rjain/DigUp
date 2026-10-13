@@ -10,6 +10,7 @@ const fileURL = (path) => tauri.core.convertFileSrc(path);
 
 const isMac = /Mac/.test(navigator.platform);
 const isWindows = /Win/.test(navigator.platform);
+const isLinux = /Linux/.test(navigator.platform);
 const MOD = isMac ? "⌘" : "Ctrl+";
 const FILE_MANAGER = isMac ? "Finder" : isWindows ? "Explorer" : "Files";
 // Pictures every web view shows as they are; anything else (HEIC, TIFF, RAW…) comes as JPEG from the helper.

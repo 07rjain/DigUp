@@ -43,3 +43,7 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Dragging a result out of the window: the system's drag on Windows and the Mac (on Linux, WebKit's own drag does it).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+drag = "2.1.1"

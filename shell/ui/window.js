@@ -266,7 +266,10 @@ const thumbnails = new IntersectionObserver((entries) => {
     const [kind, loc, pixels] = JSON.parse(image.dataset.render);
     const path = image.closest("[data-path]").dataset.path;
     rendered(path, kind, loc, pixels)
-      .then((file) => { image.src = fileURL(file); })
+      .then((file) => {
+        image.src = fileURL(file);
+        image.closest("[data-path]").dataset.thumb = file;   // the picture under the pointer when it's dragged out
+      })
       .catch(() => image.replaceWith(bigIcon(kind === "image" ? "image" : kind, true)));
   }
 }, { root: $content, rootMargin: "300px" });
@@ -334,7 +337,34 @@ function codeRow(hit, weaker) {
 /// A result's clicks: one selects it, two open it, the other button offers what to do with the file. The field keeps
 /// the keyboard (as on the Mac: ← → move the selection once you've picked a result).
 function wire(item, hit) {
-  item.onmousedown = (event) => { if (event.button === 0) event.preventDefault(); };
+  // Dragged out of the window, the file goes along (to a file manager, a mail, a chat). On Linux, WebKit's own drag with
+  // the file's address: GTK starts it from the press, as Wayland wants (a drag started later is refused).
+  if (isLinux) {
+    item.draggable = true;
+    item.ondragstart = (event) => {
+      const address = "file://" + hit.path.split("/").map(encodeURIComponent).join("/");
+      event.dataTransfer.setData("text/uri-list", address);
+      event.dataTransfer.setData("text/plain", hit.path);
+      event.dataTransfer.effectAllowed = "copy";
+    };
+  }
+  // Elsewhere: pressed and moved a little, the system's drag (which needs the button down).
+  item.onmousedown = (event) => {
+    if (event.button !== 0 || isLinux) return;
+    event.preventDefault();
+    const [x, y] = [event.clientX, event.clientY];
+    const moved = (move) => {
+      if (Math.hypot(move.clientX - x, move.clientY - y) < 6) return;
+      done();
+      invoke("drag_out", { path: hit.path, icon: item.dataset.thumb || null }).catch(() => {});
+    };
+    const done = () => {
+      window.removeEventListener("mousemove", moved);
+      window.removeEventListener("mouseup", done);
+    };
+    window.addEventListener("mousemove", moved);
+    window.addEventListener("mouseup", done);
+  };
   item.onclick = () => select(hit.path);
   item.ondblclick = () => open(hit);
   item.oncontextmenu = (event) => {

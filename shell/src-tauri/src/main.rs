@@ -383,6 +383,33 @@ fn copy_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
     clipboard::copy_file(&window, Path::new(&path)).inspect_err(|error| eprintln!("digup-shell: can't copy {path}: {error}"))
 }
 
+/// A result dragged out of the window (to a file manager, a mail, a chat) on Windows and the Mac: the system's own drag
+/// of the file, with its thumbnail (`icon`, a picture already rendered) or DigUp's icon under the pointer, started while
+/// the button is down. On Linux the page drags it itself (WebKit's drag starts from the press, as Wayland wants).
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn drag_out() {}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn drag_out(window: tauri::WebviewWindow, path: String, icon: Option<String>) -> Result<(), String> {
+    let file = PathBuf::from(if cfg!(windows) { path.replace('/', "\\") } else { path });
+    let image = match icon {
+        Some(icon) => drag::Image::File(icon.into()),
+        None => drag::Image::Raw(include_bytes!("../icons/128x128.png").to_vec()),
+    };
+    let source = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let started = drag::start_drag(&source, drag::DragItem::Files(vec![file]), image, |_, _| {},
+                                           drag::Options::default());
+            if let Err(error) = started {
+                eprintln!("digup-shell: can't drag the file out: {error}");
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
 /// Shows a result in the file manager, selected.
 #[tauri::command]
 fn reveal(app: AppHandle, path: String) -> Result<(), String> {
@@ -572,7 +599,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
