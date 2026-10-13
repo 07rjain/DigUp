@@ -51,6 +51,58 @@ function renderGeneral() {
   $("shortcut-note").textContent = note || "";
   $("shortcut-command").hidden = info.shortcut.method !== "by_hand";
   $("shortcut-command").textContent = info.shortcut.command;
+  $("change-shortcut").hidden = info.shortcut.method !== "grab" || recording;
+  $("recording").hidden = !recording;
+}
+
+// MARK: The shortcut (where DigUp grabs it itself: Windows, X11)
+
+let recording = false;
+
+$("change-shortcut").onclick = () => {
+  recording = true;
+  $("recording").textContent = "Press the new shortcut. Esc keeps the one you have.";
+  renderGeneral();
+};
+
+document.addEventListener("keydown", async (event) => {
+  if (!recording) return;
+  event.preventDefault();
+  if (event.key === "Escape") {
+    recording = false;
+    renderGeneral();
+    return;
+  }
+  const key = keyName(event.code);
+  if (!key) return;   // a modifier alone, so far
+  if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+    $("recording").textContent = "Add Ctrl, Alt or the Windows key, so that typing doesn't open the panel.";
+    return;
+  }
+  const accelerator = [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super",
+                       key].filter(Boolean).join("+");
+  recording = false;
+  $("problem").hidden = true;
+  try {
+    info.hotkey = await invoke("set_hotkey", { hotkey: accelerator });
+  } catch (error) {
+    fail(error);
+  }
+  renderGeneral();
+});
+
+/// A key's name as shortcuts spell it ("D", "5", "Space", "F5", "Up"), from where it is on the keyboard; none for a
+/// modifier.
+function keyName(code) {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  if (/^F\d{1,2}$/.test(code)) return code;
+  const names = { Space: "Space", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+                  Enter: "Enter", Tab: "Tab", Backspace: "Backspace", Delete: "Delete", Home: "Home", End: "End",
+                  PageUp: "PageUp", PageDown: "PageDown", Insert: "Insert", Backquote: "Backquote", Minus: "Minus",
+                  Equal: "Equal", Comma: "Comma", Period: "Period", Slash: "Slash", Semicolon: "Semicolon",
+                  Quote: "Quote", BracketLeft: "BracketLeft", BracketRight: "BracketRight", Backslash: "Backslash" };
+  return names[code] || null;
 }
 
 /// A switch: the shell does it, or the box goes back and says why.

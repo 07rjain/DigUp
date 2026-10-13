@@ -601,7 +601,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -1206,6 +1206,27 @@ fn storage(shell: &Shell) -> Value {
         "codeBytes": size("code.sqlite"),
         "models": models.map(|folder| folder.display().to_string()),
     })
+}
+
+/// Settings → General: a new shortcut for the panel, where DigUp grabs it itself (Windows, X11; GNOME and KDE keep it in
+/// their own settings). The new one is registered before the old one goes, so one another app holds is refused and the
+/// old one stays. Returns the shortcut as it's shown.
+#[tauri::command]
+fn set_hotkey(app: AppHandle, shell: State<'_, Arc<Shell>>, hotkey: String) -> Result<String, String> {
+    if shell.shortcut != Method::Grab {
+        return Err("This desktop keeps the shortcut in its own settings.".into());
+    }
+    let old = shell.hotkey();
+    if hotkey != old {
+        let shortcuts = app.global_shortcut();
+        shortcuts.register(hotkey.as_str())
+            .map_err(|_| format!("{} can't be used: another app may have it.", shortcut_text(&hotkey)))?;
+        let _ = shortcuts.unregister(old.as_str());
+        let mut settings = shell.settings.lock().unwrap();
+        settings.hotkey = hotkey;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    Ok(shell.hotkey_text())
 }
 
 /// Settings → Folders: stops searching a folder (and what's skipped inside it); its files leave the index.
