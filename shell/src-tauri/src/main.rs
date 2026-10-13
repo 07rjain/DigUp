@@ -1734,12 +1734,16 @@ fn measure_then_index(app: &AppHandle) {
         while shell.estimating.load(Ordering::SeqCst) > 0 && waiting.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(250));
         }
+        // The check itself waits (a minute at most) for other programs to settle: just after the model's download a
+        // virus scanner reads the new files, and at a login everything starts at once.
         let mut command = std::process::Command::new(&shell.options.helper);
-        command.args(["speed", "--model", "--if-needed", "--json"]).args(shell.index_arguments());
+        command.args(["speed", "--model", "--if-needed", "--when-quiet", "60", "--json"]).args(shell.index_arguments());
         if let Some(models) = &shell.options.models {
             command.env("DIGUP_MODELS", models);
         }
-        if let Ok(log) = std::fs::OpenOptions::new().create(true).append(true).open(shell.logs.join("speed.log")) {
+        // Its reply goes to speed.log after what it said on the way (the model's own lines go to the index's worker.log).
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(shell.logs.join("speed.log")).ok();
+        if let Some(log) = log.as_ref().and_then(|log| log.try_clone().ok()) {
             command.stderr(log);
         }
         #[cfg(windows)]
@@ -1747,11 +1751,16 @@ fn measure_then_index(app: &AppHandle) {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
+        let started = hours::clock(hours::now());
         let reply = match command.output() {
             Ok(output) => String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok())
                 .last().unwrap_or_else(|| json!({"event": "speed", "error": format!("exit {}", output.status)})),
             Err(error) => json!({"event": "speed", "error": error.to_string()}),
         };
+        if let Some(mut log) = log {
+            use std::io::Write;
+            let _ = writeln!(log, "speed check from {started}: {reply}");
+        }
         if cfg!(debug_assertions) {
             println!("speed: {reply}");
         }
