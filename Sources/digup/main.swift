@@ -17,8 +17,10 @@ let usage = """
       digup search <words>... [--kind K,K] [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup status                            what's in the index
-      digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
-                                              what indexing has measured here (costs.json in the index folder)
+      digup speed [--model [--if-needed]] [--json]
+                                              this machine's speed next to the M4 Pro behind the estimates, and
+                                              what indexing has measured here (costs.json in the index folder);
+                                              --model times the model itself (Linux and Windows) and keeps it
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                           [--memory-limit MB] [--time-limit S]
@@ -63,7 +65,7 @@ struct Arguments {
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit"]
+                                      "--memory-limit", "--time-limit", "--tries"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -218,6 +220,9 @@ func estimate(_ args: Arguments) throws {
         MeasuredCosts.setSpeed(speed, in: args.indexFolder)
     }
     let costs = measured.costs
+    // The times are this machine's (a speed check or indexing measured it); off the Mac, before `digup speed --model`
+    // has run, they're the M4 Pro's, far too short for most PCs.
+    let calibrated = measured.speed != nil || !measured.tallies.isEmpty
     var total = 0.0
     for folder in args.positional.map(Arguments.folderURL) {
         // One folder that isn't there or can't be read (a denied privacy prompt) mustn't sink the others.
@@ -245,12 +250,15 @@ func estimate(_ args: Arguments) throws {
             }
             // One line per folder, as soon as it's done (the app's onboarding shows them as they come).
             emit(["folder": folder.path, "seconds": estimate.seconds, "readable": true, "files": files(estimate),
+                  "kind_seconds": Dictionary(uniqueKeysWithValues: estimate.kindSeconds.map { ($0.key.rawValue, $0.value) }),
+                  "calibrated": calibrated,
                   "pdf_pages": estimate.pdfPages, "pdf_pages_total": estimate.pdfPagesTotal,
                   "audio_seconds": estimate.audioSeconds, "video_seconds": estimate.videoSeconds,
                   "long_files": estimate.longFiles, "later_seconds": estimate.laterSeconds,
                   "code_stretches": estimate.codeStretches, "bytes": estimate.bytes,
                   "subfolders": subfolders.prefix(500).map {
                       ["folder": $0.key, "seconds": $0.value.seconds, "files": files($0.value),
+                       "kind_seconds": Dictionary(uniqueKeysWithValues: $0.value.kindSeconds.map { ($0.key.rawValue, $0.value) }),
                        "long_files": $0.value.longFiles, "later_seconds": $0.value.laterSeconds,
                        "bytes": $0.value.bytes] as [String: Any]
                   },
@@ -447,8 +455,10 @@ func indexService(_ args: Arguments) throws -> Int32 {
     return service.serve()
 }
 
-/// `digup speed`: the speed check estimates start from, and what indexing has measured on this machine.
-func speed(_ args: Arguments) {
+/// `digup speed`: the speed check estimates start from, and what indexing has measured on this machine. `--model`
+/// times the model itself instead (`ModelSpeed`: Linux and Windows) and keeps the result beside the index.
+func speed(_ args: Arguments) throws {
+    if args.flags.contains("--model") { return try modelSpeed(args) }
     if let seconds = MeasuredCosts.Speed.measuredSeconds() {
         let speed = MeasuredCosts.Speed.compared(seconds)
         print(String(format: "20 float16 matrix multiplies (2048²) %.3f s · Vision on a made-up screenshot %.3f s",
@@ -464,6 +474,38 @@ func speed(_ args: Arguments) {
     for (name, tally) in measured.tallies.sorted(by: { $0.key < $1.key }) {
         print(String(format: "  %@ %.4f s each, over %.0f", name, tally.seconds / tally.units, tally.units))
     }
+}
+
+/// `digup speed --model [--if-needed] [--json]`: the model timed on this machine, kept in costs.json beside the index
+/// for estimates. `--if-needed` leaves one measured before alone. The shell runs it once the model is in.
+func modelSpeed(_ args: Arguments) throws {
+    let folder = args.indexFolder
+    let json = args.flags.contains("--json")
+    var speed = MeasuredCosts.load(from: folder).speed ?? MeasuredCosts.Speed(embedding: 1, ocr: 1)
+    if args.flags.contains("--if-needed"), let kinds = speed.kinds {
+        if json { emit(["event": "speed", "kinds": kinds, "measured": false]) }
+        return
+    }
+    let started = Date()
+    let model = try makeEmbedder(textOnly: false, log: folder.appendingPathComponent("worker.log"))
+    defer { model.close() }
+    let loaded = Date()
+    let times = try ModelSpeed.measure(model, tries: args.values["--tries"].flatMap(Int.init) ?? 1)
+    speed.kinds = ModelSpeed.factors(times)
+    MeasuredCosts.setSpeed(speed, in: folder)
+    let load = loaded.timeIntervalSince(started), total = Date().timeIntervalSince(started)
+    if json {
+        emit(["event": "speed", "kinds": speed.kinds ?? [:], "seconds": times.fields, "load": load, "total": total,
+              "measured": true])
+        return
+    }
+    print(String(format: "the model loaded in %.2f s; the check took %.1f s", load, total))
+    for (name, seconds) in times.fields.sorted(by: { $0.key < $1.key }) {
+        let base = ModelSpeed.baseline.fields[name] ?? seconds
+        print(String(format: "  %@ %.3f s (M4 Pro %.3f s, ×%.1f)", name, seconds, base, seconds / base))
+    }
+    print("kept in \(tilde(MeasuredCosts.file(in: folder).path)): " + (speed.kinds ?? [:]).sorted { $0.key < $1.key }
+        .map { String(format: "%@ ×%.1f", $0.key, $0.value) }.joined(separator: " · "))
 }
 
 // MARK: Eval
@@ -576,7 +618,7 @@ do {
     case "index": try index(args)
     case "search": try search(args)
     case "status": try status(args)
-    case "speed": speed(args)
+    case "speed": try speed(args)
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))

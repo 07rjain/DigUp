@@ -16,14 +16,18 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
     }
 
     /// How this Mac compares to the M4 Pro behind `Costs`: 1 is as fast, 2 takes twice as long. `embedding` for the
-    /// model's work (matrix multiplies on the GPU), `ocr` for Vision's text recognition.
+    /// model's work (matrix multiplies on the GPU), `ocr` for Vision's text recognition. `kinds`, when there: each of
+    /// `Costs`' fields as it compares, measured with the model itself (Linux and Windows, `digup speed --model`), in
+    /// place of the other two.
     public struct Speed: Codable, Sendable, Equatable {
         public var embedding: Double
         public var ocr: Double
+        public var kinds: [String: Double]?
 
-        public init(embedding: Double, ocr: Double) {
+        public init(embedding: Double, ocr: Double, kinds: [String: Double]? = nil) {
             self.embedding = embedding
             self.ocr = ocr
+            self.kinds = kinds
         }
     }
 
@@ -56,7 +60,17 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
     /// The costs to estimate with: measured ones where there are enough, else the fixed ones as fast as `speed` says.
     public var costs: Costs {
         var costs = Costs()
-        if let speed {
+        if let kinds = speed?.kinds {
+            // A PC's processor can be fifty times slower than the M4 Pro's GPU.
+            func scaled(_ name: String, _ cost: Double) -> Double { cost * min(500, max(0.1, kinds[name] ?? 1)) }
+            costs.image = scaled("image", costs.image)
+            costs.screenshot = scaled("screenshot", costs.screenshot)
+            costs.pdfPage = scaled("pdfPage", costs.pdfPage)
+            costs.docChunk = scaled("docChunk", costs.docChunk)
+            costs.audioSecond = scaled("audioSecond", costs.audioSecond)
+            costs.videoSecond = scaled("videoSecond", costs.videoSecond)
+            costs.codeStretch = scaled("codeStretch", costs.codeStretch)
+        } else if let speed {
             let embedding = min(10, max(0.25, speed.embedding)), ocr = min(10, max(0.25, speed.ocr))
             costs.image *= embedding
             costs.screenshot *= max(embedding, ocr)   // OCR runs beside the model and usually sets the pace
