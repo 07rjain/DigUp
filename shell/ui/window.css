@@ -607,6 +607,9 @@ svg { display: block; }
 .status-line:hover { color: var(--text); }
 .status .spacer { flex: 1; }
 .status .count { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status .update { display: flex; align-items: center; gap: 5px; flex: none; border: 0; padding: 0; background: none; font-size: 11px; color: var(--ember); white-space: nowrap; cursor: pointer; }
+.status .update:disabled { cursor: default; }
+.status .update svg { width: 12px; height: 12px; }
 .ring { width: 12px; height: 12px; flex: none; }
 .ring svg { width: 12px; height: 12px; transform: rotate(-90deg); }
 .ring circle { fill: none; stroke-width: 2.4; }

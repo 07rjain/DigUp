@@ -18,6 +18,9 @@ main.settings h3:first-child { margin-top: 14px; }
 .hours-option { border-bottom: 0; margin-top: 14px; }
 .option .choice { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 4px; }
 .option .choice input { margin: 0; accent-color: var(--moss); }
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; }
+.update-row .link { padding: 0; color: var(--secondary); cursor: default; }
+.update-row .link.available { color: var(--ember); cursor: pointer; }
 .times { margin-top: 6px; font-size: 12px; color: var(--secondary); display: flex; align-items: center; gap: 8px; }
 .times input { font: inherit; font-size: 12px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
 

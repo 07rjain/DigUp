@@ -33,5 +33,12 @@
     "windows": {
       "nsis": { "installerHooks": "windows/hooks.nsh" }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": ["https://raw.githubusercontent.com/ARahim3/DigUp/main/updates/latest.json"],
+      "requireSignedVersion": true
+    }
   }
 }

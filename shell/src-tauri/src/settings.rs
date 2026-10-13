@@ -35,6 +35,10 @@ pub struct Settings {
     pub window: Option<WindowPlace>,
     /// A click on the tray icon (Windows): "panel" shows the search panel, anything else opens the window.
     pub tray_click: String,
+    /// The daily check for updates was turned off (Settings → General; it's on by default).
+    pub update_checks_off: bool,
+    /// When DigUp last checked for updates (seconds since 1970).
+    pub update_checked: u64,
 }
 
 /// The window's size inside its frame (logical pixels), where it was (physical; Wayland doesn't tell), and whether it

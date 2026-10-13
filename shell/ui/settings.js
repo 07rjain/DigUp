@@ -1,6 +1,6 @@
 // DigUp's Settings window, its tabs after the Mac app's (Sources/DigUpApp/SettingsWindow.swift). General: opening at
-// login, centering the search panel where the desktop places windows itself (it costs memory, so it's a choice), and
-// where the shortcut lives. Folders: how indexing goes (with Pause), each folder searched and how far along it is, the
+// login, centering the search panel where the desktop places windows itself (it costs memory, so it's a choice), where
+// the shortcut lives, and updates. Folders: how indexing goes (with Pause), each folder searched and how far along it is, the
 // folders and file types skipped, and the set hours. Code: code search's folders (added in setup's folder list for code),
 // the editor its results open in, turning it off. Storage: the model, the index, privacy.
 "use strict";
@@ -55,7 +55,36 @@ function renderGeneral() {
   $("shortcut-command").textContent = info.shortcut.command;
   $("change-shortcut").hidden = info.shortcut.method !== "grab" || recording;
   $("recording").hidden = !recording;
+  renderUpdates();
 }
+
+/// Updates: the daily check, and this version or the one waiting (updates.rs).
+function renderUpdates() {
+  $("update-checks").checked = info.updateChecks;
+  $("update-info").textContent = "Once a day DigUp asks GitHub for its newest version; nothing about your files is sent. "
+    + (info.installsUpdates ? "Updates install with one click."
+      : "A new version is downloaded from its release page and installed as this one was.");
+  const update = info.state && info.state.update;
+  const version = $("update-version");
+  version.classList.toggle("available", Boolean(update));
+  version.textContent = !update ? `DigUp ${info.version}`
+    : update.state === "downloading" ? `Downloading DigUp ${update.version}…` + (update.percent != null ? ` ${update.percent}%` : "")
+    : update.state === "installing" ? `Installing DigUp ${update.version}…` : `DigUp ${update.version} is available`;
+}
+
+$("update-version").onclick = () => {
+  if (info.state && info.state.update) invoke("offer_update").catch(fail);
+};
+$("check-now").onclick = async () => {
+  $("problem").hidden = true;
+  $("check-now").disabled = true;
+  try {
+    await invoke("check_for_updates");
+  } catch (error) {
+    fail(error);
+  }
+  $("check-now").disabled = false;
+};
 
 /// A switch: the shell does it, or the box goes back and says why.
 function wire(box, command) {
@@ -72,6 +101,7 @@ function wire(box, command) {
 
 wire($("login"), "set_open_at_login");
 wire($("center"), "set_center_panel");
+wire($("update-checks"), "set_update_checks");
 for (const choice of document.querySelectorAll('input[name="tray-click"]')) {
   choice.addEventListener("change", () => {
     $("problem").hidden = true;
@@ -456,6 +486,7 @@ tauri.event.listen("state", ({ payload }) => {
   info.state = payload;
   renderStatus();
   renderStorage();
+  renderUpdates();
   // The code index's progress isn't in the state: its folders are asked again while the tab is up.
   const counts = payload.searchable !== before.searchable || payload.pending !== before.pending;
   const load = !$("folders").hidden && counts ? loadSummaries : !$("code").hidden ? loadCodeSummaries : null;

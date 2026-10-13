@@ -875,6 +875,22 @@ function renderStatus() {
       : `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : ""));
   }
   $("count").textContent = count;
+  renderUpdate(app.update);
+}
+
+/// An update waiting (updates.rs), as on the Mac: a line on the right of the status bar, then its download.
+function renderUpdate(update) {
+  const button = $("update");
+  button.hidden = !update;
+  if (!update) return;
+  const text = update.state === "downloading"
+    ? `Downloading DigUp ${update.version}…` + (update.percent != null ? ` ${update.percent}%` : "")
+    : update.state === "installing" ? `Installing DigUp ${update.version}…` : `DigUp ${update.version} is available`;
+  button.innerHTML = '<svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="6" fill="currentColor"/>'
+    + '<path d="M6 3v5M3.8 6l2.2 2.2L8.2 6" fill="none" stroke="white" stroke-width="1.4" stroke-linecap="round" '
+    + 'stroke-linejoin="round"/></svg>';
+  button.append(text);
+  button.disabled = update.state !== "available";
 }
 
 // MARK: Menus
@@ -920,6 +936,10 @@ function showMainMenu() {
      null, folders],
     null,
     ["Settings…", () => invoke("open_settings").catch(failed), `${MOD},`],
+    state.app.update
+      ? [`Update to DigUp ${state.app.update.version}…`, () => invoke("offer_update").catch(failed), null,
+         state.app.update.state === "available"]
+      : ["Check for Updates…", () => invoke("check_for_updates").catch(failed)],
     null,
     ["Quit DigUp", () => invoke("quit_app").catch(failed)],
   ]);
@@ -949,6 +969,7 @@ $("settings").title = `Settings (${MOD},)`;
 $("more").onmousedown = (event) => event.preventDefault();
 $("more").onclick = () => ($menu.hidden ? showMainMenu() : hideMenu());
 $("status-line").onclick = () => invoke("choose_folders").catch(failed);
+$("update").onclick = () => invoke("offer_update").catch(failed);
 $kinds.onmousedown = (event) => event.preventDefault();
 
 function updatePreviewButton() {

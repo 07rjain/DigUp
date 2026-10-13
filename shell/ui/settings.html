@@ -49,6 +49,19 @@
       <p class="note" id="recording" hidden></p>
       <p class="shortcut-note" id="shortcut-note" hidden></p>
       <code class="command" id="shortcut-command" hidden></code>
+
+      <h3>Updates</h3>
+      <label class="option">
+        <input type="checkbox" id="update-checks">
+        <span class="text">
+          <span class="name">Check for updates automatically</span>
+          <span class="info" id="update-info"></span>
+        </span>
+      </label>
+      <div class="update-row">
+        <button class="link" id="update-version"></button>
+        <button id="check-now">Check Now</button>
+      </div>
     </section>
 
     <section class="tab" id="folders" role="tabpanel" hidden>
@@ -130,7 +143,8 @@
       </div>
       <h3>Privacy</h3>
       <p class="privacy-text">DigUp reads the folders you choose and keeps what it learns in its index, on this
-        computer. It goes online only to download its model, once.</p>
+        computer. It goes online only to download its model, once, and to check for updates (General), which sends nothing
+        about your files.</p>
       <p class="note" id="version"></p>
     </section>
 

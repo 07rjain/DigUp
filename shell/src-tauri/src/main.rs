@@ -16,6 +16,7 @@ mod options;
 mod settings;
 mod status;
 mod tray_icon;
+mod updates;
 mod watcher;
 mod wayland;
 
@@ -72,6 +73,11 @@ struct Shell {
     status_item: Mutex<Option<MenuItem<Wry>>>,
     index_item: Mutex<Option<MenuItem<Wry>>>,
     pause_item: Mutex<Option<MenuItem<Wry>>>,
+    /// The tray's menu, and the waiting update's line in it with a line under it (while one waits).
+    tray_menu: Mutex<Option<Menu<Wry>>>,
+    update_item: Mutex<Option<(MenuItem<Wry>, PredefinedMenuItem<Wry>)>>,
+    /// In-app updates (updates.rs).
+    updates: updates::Updates,
     /// What the tray icon shows now (tray_icon.rs): redrawn only when that changes.
     tray_look: Mutex<Option<tray_icon::Look>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
@@ -200,6 +206,7 @@ impl Shell {
         let model = self.model_state.lock().unwrap().clone();
         let mut snapshot = self.status.lock().unwrap().snapshot(!self.folders().is_empty(), &model);
         snapshot["hasCode"] = json!(!self.code_folders().is_empty());
+        snapshot["update"] = self.updates.snapshot();
         snapshot
     }
 }
@@ -584,6 +591,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // The launch at login says so: DigUp then waits in the tray instead of showing its window.
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--at-login"])))
         .plugin(
@@ -602,7 +610,7 @@ fn main() {
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
-            set_tray_click
+            set_tray_click, check_for_updates, offer_update, set_update_checks
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -691,6 +699,9 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         status_item: Mutex::new(None),
         index_item: Mutex::new(None),
         pause_item: Mutex::new(None),
+        tray_menu: Mutex::new(None),
+        update_item: Mutex::new(None),
+        updates: updates::Updates::default(),
         tray_look: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
@@ -783,6 +794,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         }
     }
     watch_hours(&handle);
+    updates::start(&handle);
     // The entry that opens DigUp at login is written again: it follows DigUp if it moved, and older ones didn't say
     // `--at-login`.
     if shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false) {
@@ -1183,6 +1195,8 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
                 .collect::<Vec<_>>(),
         },
         "state": shell.snapshot(),
+        "updateChecks": !settings.update_checks_off,
+        "installsUpdates": updates::installs_itself(),
         "version": app.package_info().version.to_string(),
         "debug": shell.options.debug_settings,
     })
@@ -1374,6 +1388,26 @@ fn set_tray_click(shell: State<'_, Arc<Shell>>, click: String) -> Result<(), Str
     settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
 }
 
+/// Check for Updates… (the tray, the window's ⋯, Settings): the answer is shown, and an update found is offered.
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) {
+    updates::check(&app, true).await;
+}
+
+/// "Update to DigUp X…" (the tray, the window's status bar and ⋯): what's new, then Install and Restart.
+#[tauri::command]
+fn offer_update(app: AppHandle) {
+    updates::offer(&app);
+}
+
+/// Settings → General: "Check for updates automatically".
+#[tauri::command]
+fn set_update_checks(shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    let mut settings = shell.settings.lock().unwrap();
+    settings.update_checks_off = !on;
+    settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
+}
+
 /// Settings → Code: the editor code results open in (an editor's id, or "default" for the file's default app).
 #[tauri::command]
 fn set_code_editor(shell: State<'_, Arc<Shell>>, editor: String) -> Result<(), String> {
@@ -1485,12 +1519,13 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause Indexing", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let check = MenuItem::with_id(app, "check", "Check for Updates…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &search, &open, &folders, &index, &pause, &settings, &PredefinedMenuItem::separator(app)?,
-          &quit_item],
+        &[&status, &separator, &search, &open, &folders, &index, &pause, &settings, &check,
+          &PredefinedMenuItem::separator(app)?, &quit_item],
     )?;
     // DigUp's logo, in its colors (tray_icon.rs).
     let look = tray_icon::Look::new(None, false);
@@ -1514,6 +1549,11 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
             "settings" => later(app, |app| {
                 let _ = show_settings(app);
             }),
+            "update" => updates::offer(app),
+            "check" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { updates::check(&app, true).await });
+            }
             "quit" => quit(app),
             _ => {}
         })
@@ -1536,6 +1576,7 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     *shell.status_item.lock().unwrap() = Some(status);
     *shell.index_item.lock().unwrap() = Some(index);
     *shell.pause_item.lock().unwrap() = Some(pause);
+    *shell.tray_menu.lock().unwrap() = Some(menu);
     Ok(())
 }
 
@@ -1608,8 +1649,10 @@ fn changed(app: &AppHandle) {
         let _ = pause.set_text(if snapshot["paused"] == true { "Resume Indexing" } else { "Pause Indexing" });
         let _ = pause.set_enabled(folders);
     }
-    // The ring when it moves a step, the bars when paused.
-    let look = tray_icon::Look::new(snapshot["progress"].as_f64(), snapshot["paused"] == true);
+    update_line(app, &shell);
+    // The ring when it moves a step, the bars when paused, a dot while an update waits.
+    let look = tray_icon::Look::new(snapshot["progress"].as_f64(), snapshot["paused"] == true)
+        .with_update(!snapshot["update"].is_null());
     let mut shown = shell.tray_look.lock().unwrap();
     if shown.is_some() && *shown != Some(look) {
         if let Some(tray) = app.tray_by_id("digup") {
@@ -1620,6 +1663,35 @@ fn changed(app: &AppHandle) {
     }
     drop(shown);
     let _ = app.emit("state", snapshot);
+}
+
+/// The waiting update's line in the tray menu, under the status line: added when one is found, its words following the
+/// download, gone when there's none.
+fn update_line(app: &AppHandle, shell: &Shell) {
+    let menu = shell.tray_menu.lock().unwrap();
+    let Some(menu) = menu.as_ref() else { return };
+    let mut shown = shell.update_item.lock().unwrap();
+    match (shell.updates.menu_text(), shown.as_ref()) {
+        (Some((text, enabled)), Some((item, _))) => {
+            let _ = item.set_text(text);
+            let _ = item.set_enabled(enabled);
+        }
+        (Some((text, enabled)), None) => {
+            let made = MenuItem::with_id(app, "update", text, enabled, None::<&str>)
+                .and_then(|item| Ok((item, PredefinedMenuItem::separator(app)?)));
+            if let Ok((item, line)) = made {
+                if menu.insert(&item, 2).is_ok() && menu.insert(&line, 3).is_ok() {
+                    *shown = Some((item, line));
+                }
+            }
+        }
+        (None, Some((item, line))) => {
+            let _ = menu.remove(item);
+            let _ = menu.remove(line);
+            *shown = None;
+        }
+        (None, None) => {}
+    }
 }
 
 // MARK: The helpers' events

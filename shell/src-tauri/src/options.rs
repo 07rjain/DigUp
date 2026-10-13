@@ -48,6 +48,10 @@ pub struct Options {
     pub toggle: bool,
     /// Started at login (the autostart entry says so): DigUp waits in the tray. Opened by hand, it shows its window.
     pub at_login: bool,
+    /// Debug runs: check for updates at once (in a dev run too), once.
+    pub debug_update_check: bool,
+    /// Debug runs with `debug_update_check`: install the update found without asking.
+    pub debug_update_install: bool,
 }
 
 impl Options {
@@ -71,6 +75,8 @@ impl Options {
             debug_copy: false,
             toggle: false,
             at_login: false,
+            debug_update_check: false,
+            debug_update_install: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -95,6 +101,8 @@ impl Options {
                 "--debug-copy" => options.debug_copy = true,
                 "--toggle" => options.toggle = true,
                 "--at-login" => options.at_login = true,
+                "--debug-update-check" => options.debug_update_check = true,
+                "--debug-update-install" => options.debug_update_install = true,
                 _ => return Err(format!("unknown argument {arg}")),
             }
         }
