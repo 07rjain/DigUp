@@ -1,6 +1,8 @@
 # Builds DigUp for Windows and Linux on x64: the shell's Windows installer, and its .deb and AppImage, kept as the run's
 # artifacts (nothing is published). By hand: `gh workflow run packages.yml`, or `-f ref=<branch or tag>`. The Mac app is
-# built and released on a Mac (scripts/release.sh).
+# built and released on a Mac (scripts/release.sh). llama.cpp gets its Vulkan backend beside the CPU ones (the Vulkan
+# SDK's shader compiler is what makes scripts/build-llama.sh build it): a computer whose GPU runs the model faster than
+# its processor uses it (`digup speed --model` decides), any other the processor.
 name: Packages
 
 on:
@@ -25,7 +27,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends build-essential cmake ninja-build meson nasm pkg-config \
             patchelf file libfuse2t64 zlib1g-dev libcurl4-openssl-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev glslc libvulkan-dev spirv-headers
       - name: Swift
         run: |
           version=6.4.0
@@ -62,6 +64,17 @@ jobs:
           swift-build: 6.4.0-RELEASE
           update-sdk-modules: true
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Vulkan SDK
+        shell: bash
+        run: |
+          version=1.4.363.0
+          temp=$(cygpath -u "$RUNNER_TEMP")
+          curl -fsSL -o "$temp/vulkansdk.exe" \
+            "https://sdk.lunarg.com/sdk/download/$version/windows/vulkansdk-windows-X64-$version.exe"
+          echo "94a82d378f7a5e3e54c9db7d2fb7016af136e14ac0a18dbf0f2f67a36352d141  $temp/vulkansdk.exe" | sha256sum -c -
+          "$temp/vulkansdk.exe" --root "C:\\VulkanSDK\\$version" --accept-licenses --default-answer --confirm-command install
+          echo "VULKAN_SDK=C:\\VulkanSDK\\$version" >> "$GITHUB_ENV"
+          echo "C:\\VulkanSDK\\$version\\Bin" >> "$GITHUB_PATH"
       - name: Build
         shell: bash
         run: |
