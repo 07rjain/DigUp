@@ -26,5 +26,7 @@ cp "$swift_runtime"/*.dll "$helper/"
 cp "$crt"/*.dll "$helper/"   # over the Swift runtime's copies of the same: the newer C++ runtime
 cp "$FFMPEG"/ffmpeg.exe "$FFMPEG"/ffprobe.exe "$FFMPEG"/*.dll "$helper/"
 
-(cd shell/src-tauri && npx --yes "@tauri-apps/cli@$TAURI_CLI" build --bundles nsis)
+# The helper folder goes in as the installer's resources here only: Tauri checks resources on every build.
+(cd shell/src-tauri && npx --yes "@tauri-apps/cli@$TAURI_CLI" build --bundles nsis \
+  --config '{"bundle":{"resources":{"helper/":"helper/"}}}')
 ls -la shell/src-tauri/target/release/bundle/nsis/

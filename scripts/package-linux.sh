@@ -18,8 +18,8 @@ for library in _CFURLSessionInterface curl CoreFoundation _FoundationICU Foundat
 done
 swift build -c release --product digup --static-swift-stdlib --scratch-path .build/static "${late[@]}"
 
-# What the packages carry beside the shell (shell/src-tauri/helper, tauri.linux.conf.json): the helper finds llama.cpp's
-# backends and ffmpeg in its own folder, and each library finds the others there ($ORIGIN, not the build's folders).
+# What the packages carry beside the shell (shell/src-tauri/helper): the helper finds llama.cpp's backends and ffmpeg
+# in its own folder, and each library finds the others there ($ORIGIN, not the build's folders).
 helper=shell/src-tauri/helper
 rm -rf "$helper"
 mkdir -p "$helper"
@@ -38,7 +38,8 @@ done
 
 tauri=(npx --yes @tauri-apps/cli@2.12.2)
 if cargo tauri --version > /dev/null 2>&1; then tauri=(cargo tauri); fi
-(cd shell/src-tauri && "${tauri[@]}" build --bundles deb,appimage)
+# The helper folder goes in as the packages' resources here only: Tauri checks resources on every build.
+(cd shell/src-tauri && "${tauri[@]}" build --bundles deb,appimage --config '{"bundle":{"resources":{"helper/":"helper/"}}}')
 
 # The package's name: Tauri spells "DigUp" as "dig-up".
 deb=$(ls shell/src-tauri/target/release/bundle/deb/*.deb)
