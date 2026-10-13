@@ -30,6 +30,13 @@ enum ModelSpeed {
         var fields: [String: Double] {
             ["text": text, "picture": picture, "screen": screen, "frame": frame, "sound": sound]
         }
+
+        /// From `fields` (another process's measurement).
+        init?(fields: [String: Double]) {
+            guard let text = fields["text"], let picture = fields["picture"], let screen = fields["screen"],
+                  let frame = fields["frame"], let sound = fields["sound"] else { return nil }
+            self.init(text: text, picture: picture, screen: screen, frame: frame, sound: sound)
+        }
     }
 
     /// Times each input once after a first run (the backend loads, a GPU compiles its kernels), the best of `tries`.

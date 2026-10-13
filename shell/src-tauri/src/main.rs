@@ -1757,6 +1757,15 @@ fn measure_then_index(app: &AppHandle) {
         }
         shell.measuring.store(false, Ordering::SeqCst);
         shell.status.lock().unwrap().measuring = false;
+        // The processor ran the model faster than the GPU (a weak integrated one): the search service, started before
+        // on the GPU (llama.cpp loads its backends once a process), starts again on it with the next question.
+        if reply["device"] == "cpu" {
+            shell.search.stop();
+            let (search, request) = (shell.clone(), folders_request(&shell));
+            tauri::async_runtime::spawn(async move {
+                let _ = search.search.ask(request).await;
+            });
+        }
         let _ = app.emit("speed", reply);
         changed(&app);
         run_index(&app);

@@ -18,16 +18,19 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
     /// How this Mac compares to the M4 Pro behind `Costs`: 1 is as fast, 2 takes twice as long. `embedding` for the
     /// model's work (matrix multiplies on the GPU), `ocr` for Vision's text recognition. `kinds`, when there: each of
     /// `Costs`' fields as it compares, measured with the model itself (Linux and Windows, `digup speed --model`), in
-    /// place of the other two.
+    /// place of the other two. `device`, where there's a GPU: "gpu" or "cpu", whichever ran the model faster here (a
+    /// weak integrated GPU can be slower than the processor it sits in); the helpers then run on it.
     public struct Speed: Codable, Sendable, Equatable {
         public var embedding: Double
         public var ocr: Double
         public var kinds: [String: Double]?
+        public var device: String?
 
-        public init(embedding: Double, ocr: Double, kinds: [String: Double]? = nil) {
+        public init(embedding: Double, ocr: Double, kinds: [String: Double]? = nil, device: String? = nil) {
             self.embedding = embedding
             self.ocr = ocr
             self.kinds = kinds
+            self.device = device
         }
     }
 

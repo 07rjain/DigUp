@@ -476,29 +476,72 @@ func speed(_ args: Arguments) throws {
     }
 }
 
+/// The model timed on the processor alone, in a process of its own (llama.cpp loads its backends once a process).
+func processorAlone(folder: URL, tries: Int) throws -> (times: ModelSpeed.Times, load: Double) {
+    guard let program = Bundle.main.executableURL else { throw CLIError("where is digup?") }
+    let process = Process()
+    process.executableURL = program
+    process.arguments = ["speed", "--model", "--measure-only", "--json", "--tries", String(tries), "--index", folder.path]
+    process.environment = ProcessInfo.processInfo.environment.merging(["DIGUP_DEVICE": "cpu"]) { $1 }
+    let output = Pipe()
+    process.standardOutput = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let line = String(decoding: data, as: UTF8.self).split(separator: "\n").last.map(String.init) ?? ""
+    guard process.terminationStatus == 0,
+          let reply = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+          let seconds = reply["seconds"] as? [String: Double], let load = reply["load"] as? Double,
+          let times = ModelSpeed.Times(fields: seconds)
+    else { throw CLIError("the processor's speed check failed") }
+    return (times, load)
+}
+
 /// `digup speed --model [--if-needed] [--json]`: the model timed on this machine, kept in costs.json beside the index
-/// for estimates. `--if-needed` leaves one measured before alone. The shell runs it once the model is in.
+/// for estimates. Where there's a GPU it's timed against the processor alone, and the faster is kept (`device`) for
+/// every helper: a weak integrated GPU can be slower than its processor (an i5-8350U's UHD 620 under Vulkan: 76 s
+/// against 44 s). `--if-needed` leaves one measured before alone, unless it predates that choice. The shell runs it once
+/// the model is in. `--measure-only`: the times, nothing kept (the processor's run, in a process of its own).
 func modelSpeed(_ args: Arguments) throws {
     let folder = args.indexFolder
     let json = args.flags.contains("--json")
     var speed = MeasuredCosts.load(from: folder).speed ?? MeasuredCosts.Speed(embedding: 1, ocr: 1)
-    if args.flags.contains("--if-needed"), let kinds = speed.kinds {
+    let compares = !LlamaEmbedder.cpuOnly && LlamaEmbedder.hasGPU && embedderSource() != nil
+    if args.flags.contains("--if-needed"), let kinds = speed.kinds, speed.device != nil || !compares {
         if json { emit(["event": "speed", "kinds": kinds, "measured": false]) }
         return
     }
+    let tries = args.values["--tries"].flatMap(Int.init) ?? 1
     let started = Date()
     let model = try makeEmbedder(textOnly: false, log: folder.appendingPathComponent("worker.log"))
-    defer { model.close() }
     let loaded = Date()
-    let times = try ModelSpeed.measure(model, tries: args.values["--tries"].flatMap(Int.init) ?? 1)
-    speed.kinds = ModelSpeed.factors(times)
-    MeasuredCosts.setSpeed(speed, in: folder)
-    let load = loaded.timeIntervalSince(started), total = Date().timeIntervalSince(started)
-    if json {
-        emit(["event": "speed", "kinds": speed.kinds ?? [:], "seconds": times.fields, "load": load, "total": total,
-              "measured": true])
+    var times = try ModelSpeed.measure(model, tries: tries)
+    model.close()
+    var load = loaded.timeIntervalSince(started)
+    if args.flags.contains("--measure-only") {
+        emit(["event": "speed", "seconds": times.fields, "load": load])
         return
     }
+    var compared: [String: Any] = [:]
+    if compares {
+        let alone = try processorAlone(folder: folder, tries: tries)
+        compared = ["gpu": times.fields.merging(["load": load]) { $1 }, "cpu": alone.times.fields.merging(["load": alone.load]) { $1 }]
+        let sum = { (times: ModelSpeed.Times) in times.fields.values.reduce(0, +) }
+        speed.device = sum(alone.times) < sum(times) ? "cpu" : "gpu"
+        if speed.device == "cpu" { (times, load) = (alone.times, alone.load) }
+    }
+    speed.kinds = ModelSpeed.factors(times)
+    MeasuredCosts.setSpeed(speed, in: folder)
+    let total = Date().timeIntervalSince(started)
+    if json {
+        var fields: [String: Any] = ["event": "speed", "kinds": speed.kinds ?? [:], "seconds": times.fields, "load": load,
+                                     "total": total, "measured": true]
+        if let device = speed.device { fields["device"] = device }
+        fields.merge(compared) { $1 }
+        emit(fields)
+        return
+    }
+    if let device = speed.device { print("runs on the \(device == "cpu" ? "processor (faster here than the GPU)" : "GPU")") }
     print(String(format: "the model loaded in %.2f s; the check took %.1f s", load, total))
     for (name, seconds) in times.fields.sorted(by: { $0.key < $1.key }) {
         let base = ModelSpeed.baseline.fields[name] ?? seconds
@@ -612,6 +655,10 @@ do {
     if ["index-service", "worker", "search-service", "download-model"].contains(command)
         || command == "estimate" && args.flags.contains("--json") {
         ParentWatch.start()   // an app's helper goes when the app does
+    }
+    // Where this machine's speed check found its processor faster than its GPU, the model runs on the processor.
+    if command != "speed", MeasuredCosts.load(from: args.indexFolder).speed?.device == "cpu" {
+        LlamaEmbedder.cpuOnly = true
     }
     switch command {
     case "estimate": try estimate(args)
