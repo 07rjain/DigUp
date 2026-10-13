@@ -151,10 +151,15 @@ impl Shell {
         self.wayland && self.settings.lock().unwrap().center_panel
     }
 
-    /// DigUp may open at login: not on a Mac (the DigUp app has its own login item) and not in a dev run with a settings
-    /// file of its own.
+    /// A dev run: its own index, folders or settings file. It leaves alone what an installed DigUp keeps outside its
+    /// settings (the entry that opens it at login, GNOME's shortcut), which would otherwise point at the dev build.
+    fn dev_run(&self) -> bool {
+        self.options.index.is_some() || !self.options.roots.is_empty() || self.options.settings.is_some()
+    }
+
+    /// DigUp may open at login: not on a Mac (the DigUp app has its own login item) and not in a dev run.
     fn opens_at_login(&self) -> bool {
-        !cfg!(target_os = "macos") && self.options.settings.is_none()
+        !cfg!(target_os = "macos") && !self.dev_run()
     }
 
     /// What the pages show about indexing and the model (status.rs).
@@ -253,7 +258,7 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
     // The first setup adds the shortcut to GNOME's settings; a later one (Choose Folders…) leaves it as the person has
     // it there.
     #[cfg(target_os = "linux")]
-    if first && shell.shortcut == Method::Gnome {
+    if first && shell.shortcut == Method::Gnome && !shell.dev_run() {
         if let Err(error) = hotkey::gnome::bind(&shell.hotkey(), &hotkey::toggle_command()) {
             set_status(&app, &format!("The shortcut couldn't be added to GNOME's settings: {error}"));
         }
@@ -546,7 +551,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         }
         // GNOME runs DigUp's custom shortcut (added at setup); its command follows DigUp when DigUp moves.
         #[cfg(target_os = "linux")]
-        Method::Gnome if shell.is_set_up() => hotkey::gnome::refresh(&hotkey::toggle_command()),
+        Method::Gnome if shell.is_set_up() && !shell.dev_run() => hotkey::gnome::refresh(&hotkey::toggle_command()),
         // KDE signals DigUp while it runs.
         #[cfg(target_os = "linux")]
         Method::Kde => {
