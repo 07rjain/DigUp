@@ -641,3 +641,24 @@ svg { display: block; }
 .menu .shortcut { color: var(--tertiary); }
 .menu button:hover:not(:disabled) .shortcut { color: rgba(255, 255, 255, 0.8); }
 .menu hr { border: 0; height: 1px; margin: 5px 4px; background: var(--line); }
+
+/* The big preview (Space): the selected result over the window, as big as it allows. */
+.big { position: fixed; inset: 0; z-index: 20; display: flex; padding: 24px; background: rgba(0, 0, 0, 0.45); }
+.big[hidden] { display: none; }
+.big .sheet {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px;
+  background: var(--surface); box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+}
+.big .head { flex: none; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.big .title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.big .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.big .title .place { flex: none; font-size: 12px; color: var(--secondary); }
+.big .head button { padding: 5px 14px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
+.big .head button.primary { background: var(--accent); color: white; border-color: transparent; }
+.big .head button.close { padding: 2px 10px; font-size: 18px; line-height: 1; border-color: transparent; background: none; color: var(--secondary); }
+.big .view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--pane); }
+.big .view img, .big .view video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.big .view audio { width: min(560px, 80%); }
+.big .view.text { align-items: stretch; justify-content: stretch; overflow: auto; }
+.big .view.text > * { flex: 1; max-height: none; font-size: 14px; }
+.big .view .placeholder svg { width: 96px; height: 96px; opacity: 0.5; }

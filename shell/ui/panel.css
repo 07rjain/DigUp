@@ -50,6 +50,7 @@ html, body {
 }
 
 .panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -387,3 +388,15 @@ html, body {
 
 .summary { color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .keys { color: var(--tertiary); white-space: pre; }
+
+/* The big preview (Space): the selected result over the whole panel, which grows to its tallest. */
+.big { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; border-radius: inherit;
+       overflow: hidden; background: var(--surface, #fbfbfb); }
+.big[hidden] { display: none; }
+.big .head { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line, rgba(0,0,0,0.1)); }
+.big .head .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.big .head .place { flex: none; font-size: 12px; opacity: 0.7; }
+.big .view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 10px; overflow: auto; }
+.big .view > video { max-width: 100%; max-height: 100%; }
+.big .view > * { max-width: 100%; max-height: 100%; }
+.big .view img { max-width: 100%; max-height: 100%; object-fit: contain; }

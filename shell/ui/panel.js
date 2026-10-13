@@ -9,6 +9,7 @@ const TYPING_PAUSE = 120;          // ms after the last keystroke until the mean
 const ROWS_PER_GROUP = 6;
 const FIELD_HEIGHT = 56;
 const PANEL_HEIGHT = 480;
+const BIG_HEIGHT = 640;   // the panel at its tallest, for the big preview
 const WEAKER = "\u0000weaker";     // the selectable row that folds and unfolds the weaker matches
 // Wayland: the window fills the screen and this page places the panel (the shell's wayland.rs).
 const fillsScreen = new URLSearchParams(location.search).has("fills");
@@ -45,6 +46,7 @@ let debugPending = false;
 // MARK: Searching
 
 function queryChanged() {
+  closeBig();
   const generation = ++state.generation;
   clearTimeout(state.timer);
   state.navigated = false;
@@ -169,7 +171,7 @@ if (fillsScreen) {
 
 function render() {
   const empty = state.phase === "empty";
-  const height = empty ? FIELD_HEIGHT : PANEL_HEIGHT;
+  const height = empty ? FIELD_HEIGHT : $big.hidden ? PANEL_HEIGHT : BIG_HEIGHT;
   if (height !== state.height) {
     state.height = height;
     fit();
@@ -369,7 +371,50 @@ function renderFooter() {
   else if (state.caveat && !state.isCode) summary = state.caveat;
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
   $summary.textContent = summary;
-  $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}`;
+  $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}   ␣ Preview`;
+}
+
+// MARK: The big preview (Space, as Quick Look on the Mac)
+
+const $big = element("div", "big");
+$big.hidden = true;
+document.getElementById("panel").append($big);
+
+/// Space, once a result is chosen with the arrows or a click: the panel at its tallest with the result over all of
+/// it, a video playing from its moment. Space or Esc puts it away; the arrows go on through the results under it.
+function toggleBig() {
+  if (!$big.hidden) return closeBig();
+  $big.hidden = false;
+  renderBig();
+  render();
+}
+
+function closeBig() {
+  if ($big.hidden) return;
+  $big.hidden = true;
+  $big.replaceChildren();   // its video or sound stops with it
+  render();
+}
+
+function renderBig() {
+  const hit = selectedHit();
+  if (!hit) return closeBig();
+  const head = element("div", "head");
+  head.append(element("span", "name", nameOf(hit.path)));
+  const place = placeOf(hit);
+  if (place) head.append(element("span", "place", place));
+  let view;
+  if (hit.kind === "video") {
+    view = element("video");
+    view.src = `${fileURL(hit.path)}#t=${hit.loc ?? 0}`;
+    view.controls = true;
+    view.autoplay = true;
+  } else {
+    view = picture(hit);
+  }
+  const box = element("div", "view");
+  box.append(view);
+  $big.replaceChildren(head, box);
 }
 
 function message(title, text) {
@@ -388,16 +433,29 @@ document.addEventListener("keydown", (event) => {
   switch (event.key) {
     case "Escape":
       event.preventDefault();
-      invoke("hide_panel").catch(() => {});
+      if (!$big.hidden) closeBig();
+      else invoke("hide_panel").catch(() => {});
+      break;
+    case " ":
+      // After the arrows or a click: the big preview (or the weaker matches' fold). While typing: a space.
+      if (event.altKey || event.shiftKey || modifier || !(state.navigated || !$big.hidden) || !state.selection) return;
+      event.preventDefault();
+      if (state.selection === WEAKER) toggleWeaker();
+      else toggleBig();
       break;
     case "ArrowDown":
     case "ArrowUp":
       if (event.altKey || event.shiftKey || modifier) return;
       event.preventDefault();
       move(event.key === "ArrowDown" ? 1 : -1);
+      if (!$big.hidden) {
+        if (state.selection === WEAKER) closeBig();
+        else renderBig();
+      }
       break;
     case "Enter":
       event.preventDefault();
+      closeBig();
       if (modifier) revealSelected();
       else if (state.selection === WEAKER) toggleWeaker();
       else openSelected();
@@ -412,6 +470,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 tauri.event.listen("panel-shown", () => {
+  closeBig();
   // Like Spotlight: the last query, selected.
   $query.focus();
   $query.select();
@@ -461,6 +520,8 @@ tauri.event.listen("debug-query", ({ payload }) => debugSearch(payload));   // a
 
 function report() {
   debugPending = false;
+  // Dev snapshots (index.html?big): the selected result's big preview, as Space shows it.
+  if (new URLSearchParams(location.search).has("big")) toggleBig();
   setTimeout(() => {
     const big = $preview.querySelector("img, video, audio, .passage");
     const thumbs = [...$list.querySelectorAll("img.thumb")];

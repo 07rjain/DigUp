@@ -112,6 +112,7 @@ function setQuery(text) {
 }
 
 function queryChanged() {
+  closeBig();
   state.query = $query.value;
   $("clear").hidden = !state.query;
   run();
@@ -354,6 +355,7 @@ function select(path) {
   for (const item of $content.querySelectorAll("[data-path]")) item.classList.toggle("selected", item.dataset.path === path);
   $content.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
   renderSide();
+  if (!$big.hidden) renderBig();
 }
 
 /// Arrows move through the grid: ↑ ↓ by a row, ← → by one.
@@ -582,6 +584,84 @@ function previewPicture(hit) {
   }
   box.append(frame);
   return box;
+}
+
+// MARK: The big preview (Space, as Quick Look on the Mac)
+
+const $big = element("div", "big");
+$big.hidden = true;
+$big.onclick = (event) => { if (event.target === $big) closeBig(); };
+document.body.append($big);
+
+/// Space shows the selected result over the window, big; Space, Esc or a click beside it puts it away. The arrows move
+/// through the results under it, and ↩ opens the one shown.
+function toggleBig() {
+  if (!$big.hidden) return closeBig();
+  stopPlaying();
+  $big.hidden = false;
+  renderBig();
+}
+
+function closeBig() {
+  $big.hidden = true;
+  $big.replaceChildren();   // its video or sound stops with it
+}
+
+function renderBig() {
+  const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
+  if (!hit) return closeBig();
+  const sheet = element("div", "sheet");
+  const head = element("div", "head");
+  const title = element("div", "title");
+  title.append(element("span", "name", nameOf(hit.path)));
+  const place = placeOf(hit);
+  if (place) title.append(element("span", "place", place));
+  const opening = element("button", "primary", "Open");
+  opening.onclick = () => { closeBig(); open(hit); };
+  const close = element("button", "close", "×");
+  close.title = "Close (Space)";
+  close.onclick = closeBig;
+  head.append(title, opening, close);
+  sheet.append(head, bigView(hit));
+  $big.replaceChildren(sheet);
+}
+
+/// The result as big as the window allows: the picture or the page, the video or the recording from the moment, the
+/// passage or the lines of code.
+function bigView(hit) {
+  const view = element("div", "view");
+  if (hit.kind === "code" || hit.segment === "chunk") {
+    view.classList.add("text");
+    view.append(hit.kind === "code" ? codeLines(hit) : passage(hit));
+    return view;
+  }
+  if (hit.kind === "video" || hit.kind === "audio") {
+    const media = element(hit.kind === "video" ? "video" : "audio");
+    media.src = `${fileURL(hit.path)}#t=${hit.loc ?? 0}`;
+    media.controls = true;
+    media.autoplay = true;
+    view.append(media);
+    return view;
+  }
+  const what = renderOf(hit);
+  if (!what) {
+    const placeholder = element("div", "placeholder");
+    placeholder.innerHTML = ICONS[hit.kind] || ICONS.doc;
+    view.append(placeholder);
+    return view;
+  }
+  const image = element("img");
+  image.alt = "";
+  const extension = hit.path.split(".").pop().toLowerCase();
+  if (what[0] === "image" && SHOWN_AS_IS.has(extension)) {
+    image.src = fileURL(hit.path);
+  } else {
+    const pixels = Math.round(Math.max(innerWidth, innerHeight) * (window.devicePixelRatio || 1));
+    rendered(hit.path, what[0], what[1], pixels).then((file) => { image.src = fileURL(file); }).catch(() => {});
+  }
+  image.ondblclick = () => { closeBig(); open(hit); };
+  view.append(image);
+  return view;
 }
 
 function addPlace(box, text) {
@@ -887,6 +967,12 @@ document.addEventListener("keydown", (event) => {
     }
   }
   switch (event.key) {
+    case " ":
+      // After the arrows or a click: the big preview. While typing: a space.
+      if (!plain || !(state.navigated || !$big.hidden) || !state.hasResults || !state.query.trim() || !selectedHit()) return;
+      event.preventDefault();
+      toggleBig();
+      return;
     case "ArrowDown":
     case "ArrowUp":
       if (!plain || !rows().length) return;
@@ -905,10 +991,16 @@ document.addEventListener("keydown", (event) => {
       if (modifier && !event.altKey && !event.shiftKey) reveal(hit);
       else if (plain) open(hit);
       else return;
+      closeBig();
       event.preventDefault();
       return;
     }
     case "Escape":
+      if (!$big.hidden) {
+        event.preventDefault();
+        closeBig();
+        return;
+      }
       if (!$query.value) return;
       event.preventDefault();
       setQuery("");
@@ -1001,6 +1093,8 @@ function report() {
     setTimeout(() => $("settings").click(), 500);
     return;
   }
+  // Dev snapshots (window.html?big): the selected result's big preview, as Space shows it.
+  if (new URLSearchParams(location.search).has("big")) toggleBig();
   setTimeout(() => {
     const thumbs = [...$content.querySelectorAll(".cell img")];
     const big = $side.querySelector(".frame img, .passage, .code-lines, .audio-moment, .placeholder");
