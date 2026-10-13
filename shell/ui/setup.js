@@ -11,7 +11,8 @@ const tauri = window.__TAURI__;
 const invoke = (command, args) => tauri.core.invoke(command, args);
 const isMac = /Mac/.test(navigator.platform);
 const isWindows = /Win/.test(navigator.platform);
-const PAGES = ["welcome", "folders", "shortcut", "ready"];
+// A first launch that finds code in the home folder also asks about code search, after the folders (`code`).
+let PAGES = ["welcome", "folders", "shortcut", "ready"];
 const SHORT_LIST = 6;   // subfolders shown before "Show N more"
 const CHEVRON = '<svg viewBox="0 0 16 16"><path d="M6 3.5 L10.5 8 L6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -310,6 +311,52 @@ $("add-folder").addEventListener("click", async () => {
   estimate(added);
 });
 
+// MARK: The code step (a first launch that finds folders with code)
+
+const codeChosen = new Set();
+const codeEstimates = new Map();
+
+function renderCode() {
+  const list = $("code-list");
+  list.replaceChildren(...info.codeOffered.map((folder) => {
+    const on = codeChosen.has(folder);
+    const box = element("div", "folder-box" + (on ? "" : " off"));
+    const row = element("div", "folder");
+    const toggle = () => {
+      if (on) codeChosen.delete(folder); else codeChosen.add(folder);
+      renderCode();
+    };
+    const text = element("div", "text");
+    text.append(element("div", "name", nameOf(folder)));
+    const answer = codeEstimates.get(key(folder));
+    text.append(element("div", "counts", answer ? (answer.files?.code ? `${answer.files.code.toLocaleString()} files of code`
+      : "No code here") : native(folder)));
+    row.append(checkbox(on ? "on" : "off", toggle), text);
+    if (answer?.files?.code) {
+      const time = element("div", "time" + (on ? "" : " quiet"),
+                           answer.seconds < 1 ? "under a second" : `about ${roughDuration(answer.seconds)}`);
+      if (answer.bytes > 0) time.append(element("small", "", roughBytes(answer.bytes)));
+      row.append(time);
+    } else if (!answer) {
+      row.append(element("div", "time", "…"));
+    }
+    row.onclick = (event) => { if (!event.target.closest("input")) toggle(); };
+    box.append(row);
+    return box;
+  }));
+  renderFooter();
+}
+
+async function estimateCode() {
+  try {
+    const answers = await invoke("estimate", { folders: info.codeOffered.map(native), code: true });
+    for (const answer of answers) codeEstimates.set(key(answer.folder), answer);
+  } catch {
+    // The folders show without their times.
+  }
+  if (PAGES[page] === "code") renderCode();
+}
+
 // MARK: Pages
 
 function render() {
@@ -321,6 +368,7 @@ function render() {
   $("model").hidden = codeMode || page === 0 || page === PAGES.length - 1;
   renderFooter();
   if (PAGES[page] === "ready") renderProgress();
+  if (PAGES[page] === "code") renderCode();
 }
 
 function renderFooter() {
@@ -338,6 +386,13 @@ function renderFooter() {
     else if (!firstTime) summary = "";
     else if (calibrated) summary = `First pass: about ${roughDuration(selectionPart().seconds)}`;
     else summary = "Times show once DigUp has timed this computer";
+  }
+  if (PAGES[page] === "code") {
+    const chosen = [...codeChosen].map((folder) => codeEstimates.get(key(folder))).filter(Boolean);
+    const seconds = chosen.reduce((sum, answer) => sum + (answer.seconds || 0), 0);
+    const size = chosen.reduce((sum, answer) => sum + (answer.bytes || 0), 0);
+    summary = !codeChosen.size ? "Code search stays off for now"
+      : `Reading the code: about ${roughDuration(Math.max(1, seconds))}, an index of about ${roughBytes(size)}`;
   }
   $("summary").textContent = summary;
 }
@@ -358,6 +413,19 @@ $("next").addEventListener("click", async () => {
     if (!firstTime) {
       invoke("close_window").catch(() => {});
       return;
+    }
+  }
+  if (name === "code") {
+    const folders = [...codeChosen];
+    if (folders.length) {
+      $("next").disabled = true;
+      try {
+        await invoke("set_code_folders", { folders: folders.map(native), skipped: [] });
+      } catch (error) {
+        $("summary").textContent = String(error);
+        $("next").disabled = false;
+        return;
+      }
     }
   }
   if (name === "ready") {
@@ -576,6 +644,10 @@ function element(tag, className, text) {
 async function start() {
   info = await invoke(codeMode ? "code_setup_info" : "setup_info");
   firstTime = !info.setUp;
+  if (firstTime && info.codeOffered?.length) {
+    PAGES = ["welcome", "folders", "code", "shortcut", "ready"];
+    estimateCode();
+  }
   if (codeMode) {
     $("folders").querySelector("h2").textContent = "Which code should DigUp search?";
     $("folders-subtitle").textContent = "Pick the folders with your code, and open one to leave out some of its "

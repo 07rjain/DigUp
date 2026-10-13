@@ -279,6 +279,8 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "offered": offered.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>(),
         "chosen": shell.folders(),
         "skipped": shell.settings.lock().unwrap().skipped.clone(),
+        // A first launch asks about code search too when there's code (a step after the folders).
+        "codeOffered": if shell.is_set_up() { Vec::new() } else { offered_code(&app, &shell) },
         "setUp": shell.is_set_up(),
         "hotkey": shell.hotkey_text(),
         "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
@@ -1221,22 +1223,30 @@ fn remove_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -
     Ok(())
 }
 
+/// The folders with code offered for code search: the home folder's (`code.rs`), or `--offer-code`'s; none in a dev run
+/// without it, which never offers real folders.
+fn offered_code(app: &AppHandle, shell: &Shell) -> Vec<String> {
+    let folders = match (&shell.options.offered_code, shell.dev_run()) {
+        (Some(folders), _) => folders.clone(),
+        (None, true) => Vec::new(),
+        (None, false) => app.path().home_dir().map(|home| code::candidates(&home)).unwrap_or_default(),
+    };
+    folders.iter().map(|folder| folder.display().to_string()).collect()
+}
+
 /// The code folders window (setup's folder list for code): the folders with code it offers, those chosen, and the
 /// folders skipped in them.
 #[tauri::command]
 async fn code_setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
-    let offered: Vec<PathBuf> = match (&shell.options.offered_code, shell.dev_run()) {
-        (Some(folders), _) => folders.clone(),
-        (None, true) => Vec::new(),   // dev runs never offer real folders
-        (None, false) => {
-            let home = app.path().home_dir().map_err(|error| error.to_string())?;
-            tauri::async_runtime::spawn_blocking(move || code::candidates(&home)).await.map_err(|error| error.to_string())?
-        }
+    let shell = shell.inner().clone();
+    let offered = {
+        let (app, shell) = (app.clone(), shell.clone());
+        tauri::async_runtime::spawn_blocking(move || offered_code(&app, &shell)).await.map_err(|error| error.to_string())?
     };
     Ok(json!({
         "code": true,
         "setUp": true,
-        "offered": offered.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>(),
+        "offered": offered,
         "chosen": shell.code_folders(),
         "skipped": shell.settings.lock().unwrap().code_skipped.clone(),
     }))
