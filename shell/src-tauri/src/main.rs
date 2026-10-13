@@ -601,7 +601,8 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
+            set_tray_click
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -1161,6 +1162,9 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "openAtLogin": shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false),
         "canOpenAtLogin": shell.opens_at_login(),
         "centered": shell.settings.lock().unwrap().center_panel,
+        // Windows' tray reports clicks (Linux's open the menu, a Mac's too).
+        "canChooseTrayClick": cfg!(windows),
+        "trayClick": if settings.tray_click == "panel" { "panel" } else { "window" },
         "canCenter": shell.wayland,
         "hotkey": shell.hotkey_text(),
         "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
@@ -1362,6 +1366,14 @@ fn turn_off_code(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), Str
     Ok(())
 }
 
+/// Settings → General: what a click on the tray icon does ("window" or "panel").
+#[tauri::command]
+fn set_tray_click(shell: State<'_, Arc<Shell>>, click: String) -> Result<(), String> {
+    let mut settings = shell.settings.lock().unwrap();
+    settings.tray_click = if click == "panel" { click } else { String::new() };
+    settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
+}
+
 /// Settings → Code: the editor code results open in (an editor's id, or "default" for the file's default app).
 #[tauri::command]
 fn set_code_editor(shell: State<'_, Arc<Shell>>, editor: String) -> Result<(), String> {
@@ -1507,10 +1519,16 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         })
         .on_tray_icon_event(|tray, event| {
             // Windows (and trays on Linux that report clicks): a click opens DigUp's window, as a click on an app's
-            // tray icon does there; the menu is on the other button. The panel is the shortcut's.
+            // tray icon does there, or shows the search panel if the person chose that (Settings → General); the menu
+            // is on the other button.
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                 if !cfg!(target_os = "macos") {
-                    show_window_or_setup(tray.app_handle());
+                    let app = tray.app_handle();
+                    if app.state::<Arc<Shell>>().settings.lock().unwrap().tray_click == "panel" {
+                        toggle_panel(app);
+                    } else {
+                        show_window_or_setup(app);
+                    }
                 }
             }
         })

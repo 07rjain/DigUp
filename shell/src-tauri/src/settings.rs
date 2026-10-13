@@ -33,6 +33,8 @@ pub struct Settings {
     pub delete_code_index: bool,
     /// Where the window was left, for the next time it opens.
     pub window: Option<WindowPlace>,
+    /// A click on the tray icon (Windows): "panel" shows the search panel, anything else opens the window.
+    pub tray_click: String,
 }
 
 /// The window's size inside its frame (logical pixels), where it was (physical; Wayland doesn't tell), and whether it

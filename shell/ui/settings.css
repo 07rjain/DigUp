@@ -16,6 +16,8 @@ main.settings h3:first-child { margin-top: 14px; }
 .option .name { font-size: 13px; font-weight: 600; }
 .option .info { font-size: 12px; color: var(--secondary); line-height: 1.45; }
 .hours-option { border-bottom: 0; margin-top: 14px; }
+.option .choice { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 4px; }
+.option .choice input { margin: 0; accent-color: var(--moss); }
 .times { margin-top: 6px; font-size: 12px; color: var(--secondary); display: flex; align-items: center; gap: 8px; }
 .times input { font: inherit; font-size: 12px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
 

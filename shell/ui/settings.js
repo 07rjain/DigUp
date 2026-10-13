@@ -43,6 +43,8 @@ for (const button of document.querySelectorAll("#tabs button")) button.onclick =
 function renderGeneral() {
   $("login-option").hidden = !info.canOpenAtLogin;
   $("login").checked = info.openAtLogin;
+  $("tray-click-option").hidden = !info.canChooseTrayClick;
+  for (const choice of document.querySelectorAll('input[name="tray-click"]')) choice.checked = choice.value === info.trayClick;
   $("center-option").hidden = !info.canCenter;
   $("center").checked = info.centered;
   $("keys").replaceChildren(...info.hotkey.split("+").filter(Boolean).map((key) => element("span", "key", key)));
@@ -70,6 +72,12 @@ function wire(box, command) {
 
 wire($("login"), "set_open_at_login");
 wire($("center"), "set_center_panel");
+for (const choice of document.querySelectorAll('input[name="tray-click"]')) {
+  choice.addEventListener("change", () => {
+    $("problem").hidden = true;
+    invoke("set_tray_click", { click: choice.value }).then(() => { info.trayClick = choice.value; }).catch(fail);
+  });
+}
 
 // MARK: The shortcut (where DigUp grabs it itself: Windows, X11; shortcut.js)
 
