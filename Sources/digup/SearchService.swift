@@ -20,6 +20,9 @@ import Foundation
 ///                                               (typing never waits on one) and kept in <index>/previews until the
 ///                                               next start
 ///   {"op":"reload"}                           → {"ok":true,"vectors":n,"code_vectors":n}: after indexing changed the index
+///   {"op":"summaries","code":bool}            → {"roots":[{"path","missing","unreadable","files","indexed","pending",
+///                                               "failed","skipped","unfinished","kinds":{kind: n}}]}: what's indexed
+///                                               under each chosen folder (each code folder, with `code`)
 ///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
 ///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,…}
@@ -177,6 +180,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 try openCode()
             }
             return ["ok": true, "vectors": searcher.vectorCount, "code_vectors": codeSearcher?.vectorCount ?? 0]
+        case "summaries":
+            let code = request["code"] as? Bool ?? false
+            return ["roots": (code ? codeRoots : roots).map { summary(of: $0, in: code ? codeStore : store) }]
         case "folders":
             if let value = request["roots"] as? [String] { roots = value.map { Arguments.folderURL($0).path } }
             if let value = request["skipped"] as? [String] { skipped = value.map { Arguments.folderURL($0).path } }
@@ -201,6 +207,32 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
 
     private func write(_ fields: [String: Any]) {
         output.withLock { emit(fields) }
+    }
+
+    /// What's indexed under one folder, as the Mac app's `Engine.rootSummaries` counts it: its files by state and kind.
+    private func summary(of root: String, in store: IndexStore?) -> [String: Any] {
+        let folder = URL(fileURLWithPath: root)
+        let missing = !Arguments.isFolder(folder)
+        var fields: [String: Any] = ["path": root, "missing": missing, "unreadable": !missing && !Arguments.isReadable(folder)]
+        var states = ["indexed": 0, "pending": 0, "failed": 0, "skipped": 0, "unfinished": 0]
+        var kinds: [String: Int] = [:]
+        let files = (try? store?.files(under: [root])) ?? []
+        for file in files {
+            kinds[file.kind.rawValue, default: 0] += 1
+            switch file.state {
+            case "done": states["indexed", default: 0] += 1
+            case "partial":
+                states["indexed", default: 0] += 1
+                states["unfinished", default: 0] += 1
+            case "pending": states["pending", default: 0] += 1
+            case "failed": states["failed", default: 0] += 1
+            default: states["skipped", default: 0] += 1
+            }
+        }
+        fields.merge(states) { $1 }
+        fields["files"] = files.count
+        fields["kinds"] = kinds
+        return fields
     }
 
     // MARK: Previews
