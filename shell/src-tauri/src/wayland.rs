@@ -1,14 +1,15 @@
-//! The panel on Wayland, where an app can't place its windows (the desktop puts them, a panel at the top left): its
-//! window fills the screen's work area instead (maximized and transparent), the page draws the panel where the Mac app
-//! puts it, and the window takes the pointer only over the panel, so a click beside it reaches the app below.
+//! The panel on Wayland, where an app can't place its windows (the desktop puts them: GNOME at the top left). To have
+//! it centered (Settings), its window fills the screen's work area instead (maximized and transparent), the page draws
+//! the panel where the Mac app puts it, and the window takes the pointer only over the panel, so a click beside it
+//! reaches the app below. That costs memory with the screen's size (screen-sized frames), so it's the person's choice.
 
 #[cfg(target_os = "linux")]
 use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
-/// GTK runs on Wayland here, so the panel's window fills the screen.
-pub fn fills_screen() -> bool {
+/// GTK runs on Wayland here: the desktop places DigUp's windows.
+pub fn active() -> bool {
     #[cfg(target_os = "linux")]
     return gtk::gdk::Display::default().is_some_and(|display| display.backend().is_wayland());
     #[cfg(not(target_os = "linux"))]

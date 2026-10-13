@@ -1,0 +1,9 @@
+/* The Settings window: setup.css's look (colors, keys, notes), and its options. */
+
+main.settings { padding: 26px 32px 20px; }
+
+.option { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.option input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--moss); flex: none; }
+.option .text { display: flex; flex-direction: column; gap: 3px; }
+.option .name { font-size: 13px; font-weight: 600; }
+.option .info { font-size: 12px; color: var(--secondary); line-height: 1.45; }

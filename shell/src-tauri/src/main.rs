@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
 use tauri_plugin_autostart::ManagerExt;
@@ -30,6 +30,9 @@ use tauri_plugin_opener::OpenerExt;
 use watcher::FolderWatcher;
 
 const PANEL_WIDTH: f64 = 780.0;
+/// The panel's window, under one name or the other: made anew when the person turns centering on or off.
+const PANEL: &str = "panel";
+const CENTERED_PANEL: &str = "panel-centered";
 const FIELD_HEIGHT: f64 = 56.0;
 
 /// What the commands and events share.
@@ -39,8 +42,11 @@ struct Shell {
     settings_path: PathBuf,
     /// How the panel's shortcut reaches DigUp on this desktop (hotkey.rs).
     shortcut: Method,
-    /// The panel's window fills the screen and the page places the panel (Wayland: wayland.rs).
-    fills_screen: bool,
+    /// The desktop places windows itself (GTK on Wayland), so the panel sits where it puts it unless the person has it
+    /// centered (Settings): its window then fills the screen and the page places the panel (wayland.rs).
+    wayland: bool,
+    /// The panel's window now: PANEL, or CENTERED_PANEL when it fills the screen.
+    panel_label: Mutex<&'static str>,
     search: SearchService,
     index: IndexService,
     model: ModelDownload,
@@ -49,8 +55,6 @@ struct Shell {
     watcher: Mutex<Option<FolderWatcher>>,
     /// The tray menu's first line: what's going on.
     status: Mutex<Option<MenuItem<Wry>>>,
-    /// The tray menu's "Open at Login", checked while it does.
-    login_item: Mutex<Option<CheckMenuItem<Wry>>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
@@ -129,6 +133,11 @@ impl Shell {
 
     fn model_ready(&self) -> bool {
         self.model_state.lock().unwrap()["state"] == "ready"
+    }
+
+    /// The panel sits centered in a window that fills the screen (Settings, on Wayland only).
+    fn centers_panel(&self) -> bool {
+        self.wayland && self.settings.lock().unwrap().center_panel
     }
 
     /// DigUp may open at login: not on a Mac (the DigUp app has its own login item) and not in a dev run with a settings
@@ -218,13 +227,11 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
         settings.set_up = true;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
-    // The first setup has DigUp open at login (it lives in the tray; "Open at Login" in its menu turns that off), as the
-    // Mac app does.
+    // The first setup has DigUp open at login (it lives in the tray; Settings turns that off), as the Mac app does.
     if first && shell.opens_at_login() {
         if let Err(error) = app.autolaunch().enable() {
             eprintln!("digup-shell: can't open at login: {error}");
         }
-        refresh_login_item(&app);
     }
     // The first setup adds the shortcut to GNOME's settings; a later one (Choose Folders…) leaves it as the person has
     // it there.
@@ -257,7 +264,7 @@ fn reveal(app: AppHandle, path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_panel(app: AppHandle) {
-    if let Some(panel) = app.get_webview_window("panel") {
+    if let Some(panel) = panel_window(&app) {
         let _ = panel.hide();
     }
 }
@@ -265,7 +272,7 @@ fn hide_panel(app: AppHandle) {
 /// The panel grows to show results and shrinks back to its field.
 #[tauri::command]
 fn panel_height(app: AppHandle, height: f64) {
-    if let Some(panel) = app.get_webview_window("panel") {
+    if let Some(panel) = panel_window(&app) {
         let _ = panel.set_size(LogicalSize::new(PANEL_WIDTH, height.clamp(FIELD_HEIGHT, 640.0)));
     }
 }
@@ -274,7 +281,7 @@ fn panel_height(app: AppHandle, height: f64) {
 #[tauri::command]
 fn panel_area(app: AppHandle, x: f64, y: f64, width: f64, height: f64) {
     #[cfg(target_os = "linux")]
-    if let Some(panel) = app.get_webview_window("panel") {
+    if let Some(panel) = panel_window(&app) {
         let area = (x.floor() as i32, y.floor() as i32, width.ceil() as i32, height.ceil() as i32);
         wayland::set_area(&panel, area);
     }
@@ -337,7 +344,7 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
-            panel_area, debug_query, debug_report
+            panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -408,14 +415,14 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         settings: Mutex::new(settings),
         settings_path,
         shortcut: hotkey::method(),
-        fills_screen: wayland::fills_screen(),
+        wayland: wayland::active(),
+        panel_label: Mutex::new(PANEL),
         search,
         index,
         model,
         model_state: Mutex::new(json!({"state": "checking"})),
         watcher: Mutex::new(None),
         status: Mutex::new(None),
-        login_item: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
         debug_query_sent: AtomicBool::new(false),
@@ -423,7 +430,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     });
     app.manage(shell.clone());
 
-    make_panel(&handle, shell.fills_screen)?;
+    make_panel(&handle, shell.centers_panel())?;
     // No tray (a session without a taskbar, a Linux desktop without one): the hotkey and the panel still work.
     if let Err(error) = make_tray(&handle, &shell) {
         eprintln!("digup-shell: no tray icon: {error}");
@@ -536,9 +543,10 @@ fn quit(app: &AppHandle) {
 
 // MARK: Windows
 
-fn make_panel(app: &AppHandle, fills_screen: bool) -> tauri::Result<()> {
-    let page = if fills_screen { "index.html?fills" } else { "index.html" };
-    let panel = WebviewWindowBuilder::new(app, "panel", WebviewUrl::App(page.into()))
+/// The panel's window, hidden: fitted to the panel, or filling the screen with the panel centered in it.
+fn make_panel(app: &AppHandle, centered: bool) -> tauri::Result<()> {
+    let (label, page) = if centered { (CENTERED_PANEL, "index.html?fills") } else { (PANEL, "index.html") };
+    let panel = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
         .title("DigUp")
         .inner_size(PANEL_WIDTH, FIELD_HEIGHT)
         .decorations(false)
@@ -555,9 +563,10 @@ fn make_panel(app: &AppHandle, fills_screen: bool) -> tauri::Result<()> {
         .visible(false)
         .build()?;
     #[cfg(target_os = "linux")]
-    if fills_screen {
+    if centered {
         wayland::track(&panel);
     }
+    *app.state::<Arc<Shell>>().panel_label.lock().unwrap() = label;
     let app = app.clone();
     panel.on_window_event(move |event| {
         // Like Spotlight: it steps away when you click elsewhere.
@@ -570,15 +579,37 @@ fn make_panel(app: &AppHandle, fills_screen: bool) -> tauri::Result<()> {
     Ok(())
 }
 
+fn panel_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let label = *app.state::<Arc<Shell>>().panel_label.lock().unwrap();
+    app.get_webview_window(label)
+}
+
+/// Settings turned centering on or off: the panel's window is made the other way (a window can't change between the
+/// two), then the old one goes.
+fn remake_panel(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let old = panel_window(app);
+    if old.as_ref().is_some_and(|panel| (panel.label() == CENTERED_PANEL) == shell.centers_panel()) {
+        return;
+    }
+    if let Err(error) = make_panel(app, shell.centers_panel()) {
+        eprintln!("digup-shell: can't make the panel: {error}");
+        return;
+    }
+    if let Some(old) = old {
+        let _ = old.destroy();
+    }
+}
+
 fn show_panel(app: &AppHandle) {
     if !app.state::<Arc<Shell>>().is_set_up() {
         let _ = show_setup(app);
         return;
     }
-    let Some(panel) = app.get_webview_window("panel") else { return };
+    let Some(panel) = panel_window(app) else { return };
     // On the screen with the pointer, centered, a fifth of the way down: the page puts it there in a window that fills
-    // the screen (GTK keeps the window maximized while it's hidden).
-    if app.state::<Arc<Shell>>().fills_screen {
+    // the screen (GTK keeps the window maximized while it's hidden). Elsewhere on Wayland the desktop places it.
+    if panel.label() == CENTERED_PANEL {
         let _ = panel.maximize();
     } else if let Ok(pointer) = app.cursor_position() {
         if let Ok(Some(screen)) = app.monitor_from_point(pointer.x, pointer.y) {
@@ -597,7 +628,7 @@ fn show_panel(app: &AppHandle) {
 }
 
 fn toggle_panel(app: &AppHandle) {
-    match app.get_webview_window("panel") {
+    match panel_window(app) {
         Some(panel) if panel.is_visible().unwrap_or(false) => hide_panel(app.clone()),
         _ => show_panel(app),
     }
@@ -620,6 +651,56 @@ fn show_setup(app: &AppHandle) -> tauri::Result<()> {
         .visible(!hidden)
         .build()?;
     Ok(())
+}
+
+/// Settings: opening at login, centering the panel (where the desktop places windows), and where the shortcut is.
+fn show_settings(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("DigUp Settings")
+        .inner_size(600.0, 460.0)
+        .resizable(false)
+        .maximizable(false)
+        .center()
+        .build()?;
+    Ok(())
+}
+
+/// What the Settings window shows.
+#[tauri::command]
+fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
+    json!({
+        "openAtLogin": shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false),
+        "canOpenAtLogin": shell.opens_at_login(),
+        "centered": shell.settings.lock().unwrap().center_panel,
+        "canCenter": shell.wayland,
+        "hotkey": shell.hotkey_text(),
+        "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
+    })
+}
+
+#[tauri::command]
+fn set_open_at_login(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    if !shell.opens_at_login() {
+        return Err("not in a dev run".into());
+    }
+    let autolaunch = app.autolaunch();
+    (if on { autolaunch.enable() } else { autolaunch.disable() }).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_center_panel(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.center_panel = on;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    let remake = app.clone();
+    app.run_on_main_thread(move || remake_panel(&remake)).map_err(|error| error.to_string())
 }
 
 /// "CommandOrControl+Shift+Space" as people read it here: "Ctrl+Shift+Space", or "⇧⌘Space" on a Mac.
@@ -656,17 +737,13 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let search = MenuItem::with_id(app, "search", "Search…", true, accelerator.as_deref())?;
     let folders = MenuItem::with_id(app, "folders", "Choose Folders…", true, None::<&str>)?;
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
-    let login = CheckMenuItem::with_id(app, "login", "Open at Login", true, false, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &search, &folders, &index, &PredefinedMenuItem::separator(app)?, &quit_item],
+        &[&status, &separator, &search, &folders, &index, &settings, &PredefinedMenuItem::separator(app)?, &quit_item],
     )?;
-    if shell.opens_at_login() {
-        menu.insert(&login, 5)?;
-        *shell.login_item.lock().unwrap() = Some(login);
-    }
     // A Mac's menu bar takes a template (it colors it); trays elsewhere show the app's own small icon.
     #[cfg(target_os = "macos")]
     let icon = tauri::include_image!("icons/tray-template.png");
@@ -684,13 +761,8 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
                 let _ = show_setup(app);
             }
             "index" => run_index(app),
-            "login" => {
-                let autolaunch = app.autolaunch();
-                let result = if autolaunch.is_enabled().unwrap_or(false) { autolaunch.disable() } else { autolaunch.enable() };
-                if let Err(error) = result {
-                    eprintln!("digup-shell: can't change opening at login: {error}");
-                }
-                refresh_login_item(app);
+            "settings" => {
+                let _ = show_settings(app);
             }
             "quit" => quit(app),
             _ => {}
@@ -705,15 +777,7 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         })
         .build(app)?;
     *shell.status.lock().unwrap() = Some(status);
-    refresh_login_item(app);
     Ok(())
-}
-
-/// "Open at Login" shows whether DigUp does.
-fn refresh_login_item(app: &AppHandle) {
-    if let Some(item) = app.state::<Arc<Shell>>().login_item.lock().unwrap().as_ref() {
-        let _ = item.set_checked(app.autolaunch().is_enabled().unwrap_or(false));
-    }
 }
 
 fn set_status(app: &AppHandle, text: &str) {
@@ -758,7 +822,8 @@ fn index_event(app: &AppHandle, event: Value) {
             let shell = app.state::<Arc<Shell>>();
             if let Some(query) = &shell.options.debug_query {
                 if shell.options.debug_setup && !shell.debug_query_sent.swap(true, Ordering::SeqCst) {
-                    let _ = app.emit_to("panel", "debug-query", query.clone());
+                    let label = *shell.panel_label.lock().unwrap();
+                    let _ = app.emit_to(label, "debug-query", query.clone());
                 }
             }
         }

@@ -18,6 +18,8 @@ pub struct Settings {
     pub hotkey: String,
     /// Onboarding is done: the shell starts in the tray.
     pub set_up: bool,
+    /// The panel sits centered where the desktop places windows itself (Wayland), in a window that fills the screen.
+    pub center_panel: bool,
 }
 
 impl Settings {

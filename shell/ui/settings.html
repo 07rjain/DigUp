@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DigUp Settings</title>
+  <link rel="stylesheet" href="setup.css">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main class="settings">
+    <h2>Settings</h2>
+
+    <label class="option" id="login-option" hidden>
+      <input type="checkbox" id="login">
+      <span class="text">
+        <span class="name">Open DigUp at login</span>
+        <span class="info">DigUp lives in the tray and keeps your folders indexed.</span>
+      </span>
+    </label>
+
+    <label class="option" id="center-option" hidden>
+      <input type="checkbox" id="center">
+      <span class="text">
+        <span class="name">Center the search panel</span>
+        <span class="info">This desktop decides where new windows open, so the panel opens where it puts them.
+          Centered, it opens where it does on a Mac, but DigUp then keeps a transparent window over the whole screen:
+          about 50 MB more memory on a 1080p screen (up to 200 MB on a 4K one), and more processor time while you type
+          on computers without graphics acceleration.</span>
+      </span>
+    </label>
+
+    <h3>The shortcut</h3>
+    <div class="keys" id="keys"></div>
+    <p class="shortcut-note" id="shortcut-note" hidden></p>
+    <code class="command" id="shortcut-command" hidden></code>
+    <p class="note" id="problem" hidden></p>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>
