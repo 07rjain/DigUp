@@ -414,14 +414,15 @@ fn main() {
     }
     let app = tauri::Builder::default()
         // A second launch (DigUp opened again from the app grid or the Start menu) shows the window, as on the Mac; a
-        // desktop shortcut's `--toggle` shows or hides the panel.
+        // desktop shortcut's `--toggle` shows or hides the panel. The window is made once the second launch's message
+        // has been answered: on Windows it comes as a message the other process waits on.
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|arg| arg == "--toggle") {
                 toggle_panel(app)
-            } else if !app.state::<Arc<Shell>>().is_set_up() {
-                let _ = show_setup(app);
             } else {
-                let _ = show_window(app);
+                later(app, |app| {
+                    let _ = if app.state::<Arc<Shell>>().is_set_up() { show_window(app) } else { show_setup(app) };
+                });
             }
         }))
         .plugin(tauri_plugin_opener::init())
