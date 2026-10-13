@@ -80,12 +80,13 @@ jobs:
         run: |
           # MSVC's tools before Git's: Git's /usr/bin/link (coreutils) would stand in for link.exe.
           export PATH="$(dirname "$(command -v cl)"):$PATH"
-          # ffmpeg: BtbN's LGPL build with its DLLs, one dated build.
-          ffmpeg=ffmpeg-n9.0.2-14-gebafaee10a-win64-lgpl-shared-9.0
+          # ffmpeg: BtbN's LGPL build with its DLLs, one dated build: a month's last, which BtbN keeps (the other
+          # daily builds go after two weeks).
+          ffmpeg=ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-shared-9.0
           temp=$(cygpath -u "$RUNNER_TEMP")
           curl -fsSL -o "$temp/ffmpeg.zip" \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-28-13-06/$ffmpeg.zip"
-          echo "ca5dd7d0e35ec78936a92d766d59c9f5fc36b84699aec64e0fafbcf0b0603dd2  $temp/ffmpeg.zip" | sha256sum -c -
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/$ffmpeg.zip"
+          echo "7157177b8a6cb2174c1650ba8c71b363f2c78cba5330f88c4c02cf5b2b880646  $temp/ffmpeg.zip" | sha256sum -c -
           unzip -q "$temp/ffmpeg.zip" -d "$temp"
           scripts/fetch-vendor.sh
           scripts/build-llama.sh
