@@ -74,20 +74,21 @@ enum SystemLoad {
     static var quiet: Double { 0.5 + 0.05 * Double(ProcessInfo.processInfo.activeProcessorCount) }
 
     /// Waits until other programs have kept under `quiet` for the last three seconds, at most `limit` seconds. Says how
-    /// long it waited, and whether the machine settled.
-    static func waitForQuiet(limit: Double) -> (waited: Double, settled: Bool) {
+    /// long it waited, whether the machine settled, and the least work other programs did over three seconds meanwhile.
+    static func waitForQuiet(limit: Double) -> (waited: Double, settled: Bool, calmest: Double?) {
         let started = Date()
-        guard var last = sample() else { return (0, true) }
-        var recent: [Double] = []
+        guard var last = sample() else { return (0, true, nil) }
+        var recent: [Double] = [], calmest: Double?
         while Date().timeIntervalSince(started) < limit {
             Thread.sleep(forTimeInterval: 1)
             guard let next = sample() else { break }
             recent = (recent + [others(from: last, to: next)]).suffix(3)
             last = next
-            if recent.count == 3, recent.reduce(0, +) / 3 < quiet {
-                return (Date().timeIntervalSince(started), true)
-            }
+            guard recent.count == 3 else { continue }
+            let average = recent.reduce(0, +) / 3
+            calmest = min(calmest ?? average, average)
+            if average < quiet { return (Date().timeIntervalSince(started), true, calmest) }
         }
-        return (Date().timeIntervalSince(started), false)
+        return (Date().timeIntervalSince(started), false, calmest)
     }
 }

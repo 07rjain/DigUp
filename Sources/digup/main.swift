@@ -510,8 +510,10 @@ func processorAlone(folder: URL, tries: Int) throws -> (measured: ModelSpeed.Mea
 ///
 /// One check was timed at a bad moment (an RTX 4050 laptop taken for 30 times slower than its indexing went), so
 /// `--when-quiet` waits up to S seconds for other programs to settle, each input's time is the best of up to `--tries`
-/// (3), and a check with reason for doubt (the machine never settled, its best try wasn't seen twice, or indexing went
-/// four times faster than it said) is timed again by the next `--if-needed`, up to three checks. `--if-needed` otherwise leaves one measured before alone, unless it predates the GPU's choice.
+/// (3), and a check with reason for doubt (its best try wasn't seen twice, or indexing went four times faster than it
+/// said) is timed again by the next `--if-needed`, up to three checks. A machine that never settled isn't a reason by
+/// itself: the same laptop kept 1.3 processors busy with other work through a whole minute, and its check came out
+/// right (steady tries, the GPU's times as timed by hand). `--if-needed` otherwise leaves one measured before alone, unless it predates the GPU's choice.
 /// The shell runs it once the model is in. `--measure-only`: the times, nothing kept (the processor's run).
 func modelSpeed(_ args: Arguments) throws {
     let folder = args.indexFolder
@@ -538,7 +540,7 @@ func modelSpeed(_ args: Arguments) throws {
         return
     }
     let quiet = args.values["--when-quiet"].flatMap(Double.init).map { SystemLoad.waitForQuiet(limit: $0) }
-        ?? (waited: 0, settled: true)
+        ?? (waited: 0, settled: true, calmest: nil)
     let started = Date()
     let alone = compares ? try processorAlone(folder: folder, tries: tries) : nil
     let loading = Date()
@@ -564,7 +566,7 @@ func modelSpeed(_ args: Arguments) throws {
     let close = other.map { !$0.steady && $0.total < kept.total * 1.3 } ?? false
     speed.kinds = ModelSpeed.factors(kept.times)
     speed.checks = checks + 1
-    speed.doubtful = !quiet.settled || !kept.steady || close ? true : nil
+    speed.doubtful = !kept.steady || close ? true : nil
     // What indexing measured on the other device doesn't hold on this one.
     MeasuredCosts.setSpeed(speed, in: folder, forgetTallies: saved.speed?.device.map { $0 != speed.device } ?? false)
     let total = Date().timeIntervalSince(started)
@@ -573,6 +575,7 @@ func modelSpeed(_ args: Arguments) throws {
                                      "load": load, "total": total, "measured": true, "tries": kept.tries,
                                      "others": kept.others, "waited": quiet.waited, "settled": quiet.settled,
                                      "doubtful": speed.doubtful ?? false, "checks": checks + 1]
+        if let calmest = quiet.calmest { fields["calmest"] = calmest }
         if let device = speed.device { fields["device"] = device }
         fields.merge(compared) { $1 }
         emit(fields)

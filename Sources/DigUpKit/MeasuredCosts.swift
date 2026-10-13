@@ -20,8 +20,8 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
     /// `Costs`' fields as it compares, measured with the model itself (Linux and Windows, `digup speed --model`), in
     /// place of the other two. `device`, where there's a GPU: "gpu" or "cpu", whichever ran the model faster here (a
     /// weak integrated GPU can be slower than the processor it sits in); the helpers then run on it. `checks`: how many
-    /// times the model was timed here; `doubtful`: the last time was at a bad moment (the machine never settled, or its
-    /// best try wasn't seen twice), so it's timed again at the next start.
+    /// times the model was timed here; `doubtful`: the last time was at a bad moment (its best try wasn't seen twice),
+    /// so it's timed again at the next start.
     public struct Speed: Codable, Sendable, Equatable {
         public var embedding: Double
         public var ocr: Double
