@@ -1480,12 +1480,11 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         &[&status, &separator, &search, &open, &folders, &index, &pause, &settings, &PredefinedMenuItem::separator(app)?,
           &quit_item],
     )?;
-    // The Mac app's mark, drawn in one color (a Mac's menu bar takes it as a template and colors it).
+    // DigUp's logo, in its colors (tray_icon.rs).
     let look = tray_icon::Look::new(None, false);
     *shell.tray_look.lock().unwrap() = Some(look);
     TrayIconBuilder::with_id("digup")
         .icon(tray_icon::image(look))
-        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("DigUp")
         .menu(&menu)
         .show_menu_on_left_click(cfg!(target_os = "macos"))
