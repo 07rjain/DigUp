@@ -23,11 +23,11 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# A job object that ends the helpers with the shell, and the taskbar's theme for the tray icon (already in Tauri's build
-# on Windows).
+# A job object that ends the helpers with the shell, the taskbar's theme for the tray icon, and the local time for set
+# hours (already in Tauri's build on Windows).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects",
-                                              "Win32_System_Registry"] }
+                                              "Win32_System_Registry", "Win32_System_SystemInformation"] }
 
 # GNOME's shortcut settings, `--toggle` handed to the running DigUp, and the panel's window on Wayland (all already in
 # Tauri's build on Linux).

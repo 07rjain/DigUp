@@ -34,6 +34,8 @@ pub struct Status {
     pub measuring: bool,
     /// Indexing is paused (Pause Indexing): nothing is read until it's resumed; search goes on.
     pub paused: bool,
+    /// Outside the set hours (Settings → Folders): when they begin ("01:00").
+    pub held_until: Option<String>,
 }
 
 impl Status {
@@ -99,7 +101,8 @@ impl Status {
             return "Checking this computer's speed…".into();
         }
         match self.activity {
-            Activity::Starting => "Starting…".into(),
+            // Held or paused, no index helper runs to say it has started: what's indexed stands.
+            Activity::Starting if !self.paused && self.held_until.is_none() => "Starting…".into(),
             Activity::Indexing { done, total } => format!("Indexing {}% · {} of {}", percent(done, total), number(done), number(total)),
             Activity::Finishing { done, total, files } => {
                 let which = if files > 0 { format!("{} long {}", number(files), plural(files, "file", "files")) } else { "long files".into() };
@@ -107,10 +110,20 @@ impl Status {
             }
             _ if self.pending > 0 => {
                 let waiting = format!("{} {} waiting", number(self.pending), plural(self.pending, "file", "files"));
-                if self.paused { format!("Paused · {waiting}") } else { format!("{waiting} to be indexed") }
+                match &self.held_until {
+                    _ if self.paused => format!("Paused · {waiting}"),
+                    Some(start) => format!("{waiting} · indexing from {start}"),
+                    None => format!("{waiting} to be indexed"),
+                }
             }
-            _ => format!("{} {} indexed", number(self.searchable), plural(self.searchable, "file", "files"))
-                + if self.paused { " · paused" } else { "" },
+            _ => {
+                let indexed = format!("{} {} indexed", number(self.searchable), plural(self.searchable, "file", "files"));
+                match &self.held_until {
+                    _ if self.paused => format!("{indexed} · paused"),
+                    Some(start) => format!("{indexed} · indexing from {start}"),
+                    None => indexed,
+                }
+            }
         }
     }
 
@@ -130,7 +143,7 @@ impl Status {
 
     /// Something is under way or can't start: Index Now has nothing to add.
     pub fn busy(&self, model: &Value) -> bool {
-        model["state"] != "ready" || self.measuring || self.paused
+        model["state"] != "ready" || self.measuring || self.paused || self.held_until.is_some()
             || matches!(self.activity, Activity::Indexing { .. } | Activity::Finishing { .. })
     }
 
@@ -183,6 +196,7 @@ impl Status {
             "unfinished": self.unfinished,
             "measuring": self.measuring,
             "paused": self.paused,
+            "heldUntil": self.held_until,
             "badge": self.badge(model),
             "busy": self.busy(model),
             "activity": match self.activity {
@@ -263,6 +277,14 @@ mod tests {
         assert_eq!(status.caveat(&ready), None);
         status.apply(&json!({"event": "error", "message": "worker died", "fatal": true}));
         assert_eq!(status.line(true, &ready), "⚠︎ Indexing stopped");
+
+        let mut held = Status { held_until: Some("01:00".into()), ..Status::default() };
+        held.apply(&json!({"event": "counts", "files": 70, "searchable": 66, "pending": 4, "unfinished": 0}));
+        assert_eq!(held.line(true, &ready), "4 files waiting · indexing from 01:00");
+        assert!(held.busy(&ready));
+        held.held_until = None;
+        held.paused = true;
+        assert_eq!(held.line(true, &ready), "Paused · 4 files waiting");
     }
 
     #[test]

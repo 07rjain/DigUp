@@ -7,6 +7,7 @@
 
 mod helper;
 mod hotkey;
+mod hours;
 mod options;
 mod settings;
 mod status;
@@ -82,6 +83,8 @@ struct Shell {
     measuring: AtomicBool,
     /// Folder estimates running (setup's list): the speed check waits for them, for the same reason.
     estimating: AtomicUsize,
+    /// A folder was taken out: the next index helper drops its files from the index (`--prune`).
+    prune: AtomicBool,
     logs: PathBuf,
 }
 
@@ -141,6 +144,9 @@ impl Shell {
     fn index_launch(&self) -> Launch {
         let settings = self.settings.lock().unwrap().clone();
         let mut args = vec!["index-service".to_string(), "--backfill".to_string()];
+        if self.prune.swap(false, Ordering::SeqCst) {
+            args.push("--prune".into());
+        }
         args.extend(self.index_arguments());
         for folder in &settings.skipped {
             args.extend(["--exclude".to_string(), folder.clone()]);
@@ -492,7 +498,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
-            app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing
+            app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
+            remove_folder, set_skipped, set_skip_types, set_index_hours
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -582,6 +589,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         quitting: AtomicBool::new(false),
         measuring: AtomicBool::new(false),
         estimating: AtomicUsize::new(0),
+        prune: AtomicBool::new(false),
         logs,
     });
     app.manage(shell.clone());
@@ -617,8 +625,22 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     // The search service starts now (the first search is then quick); the model is checked (and fetched if it's
     // missing: on first launch that runs while setup is open, as on the Mac); indexing waits for both.
     let warm = shell.clone();
+    let counted = handle.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = warm.search.ask(json!({"op": "status"})).await;
+        if let Ok(reply) = warm.search.ask(json!({"op": "status"})).await {
+            // What's indexed already, before any index helper says (none runs while indexing is held or paused).
+            {
+                let mut status = warm.status.lock().unwrap();
+                if status.files == 0 && reply["files"].is_u64() {
+                    status.apply(&json!({"event": "counts", "files": reply["files"], "searchable": reply["searchable"],
+                                         "pending": reply["pending"], "unfinished": reply["unfinished"]}));
+                    if status.activity == status::Activity::Starting && (status.paused || status.held_until.is_some()) {
+                        status.activity = status::Activity::Idle;
+                    }
+                }
+            }
+            changed(&counted);
+        }
     });
     let mut download = vec!["download-model".to_string()];
     if let Some(models) = &shell.options.models {
@@ -646,6 +668,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
             eprintln!("digup-shell: can't open the window: {error}");
         }
     }
+    watch_hours(&handle);
     // The entry that opens DigUp at login is written again: it follows DigUp if it moved, and older ones didn't say
     // `--at-login`.
     if shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false) {
@@ -696,7 +719,10 @@ fn watch_folders(app: &AppHandle) {
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
     if shell.folders().is_empty() || !shell.model_ready() || shell.measuring.load(Ordering::SeqCst)
-        || shell.quitting.load(Ordering::SeqCst) || shell.status.lock().unwrap().paused {
+        || shell.quitting.load(Ordering::SeqCst) || {
+            let status = shell.status.lock().unwrap();
+            status.paused || status.held_until.is_some()
+        } {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
@@ -879,7 +905,7 @@ fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     let options = &app.state::<Arc<Shell>>().options;
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("DigUp Settings")
-        .inner_size(600.0, 460.0)
+        .inner_size(660.0, 620.0)
         .resizable(false)
         .maximizable(false)
         .center()
@@ -891,6 +917,7 @@ fn show_settings(app: &AppHandle) -> tauri::Result<()> {
 /// What the Settings window shows.
 #[tauri::command]
 fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
+    let settings = shell.settings.lock().unwrap().clone();
     json!({
         "openAtLogin": shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false),
         "canOpenAtLogin": shell.opens_at_login(),
@@ -898,8 +925,100 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "canCenter": shell.wayland,
         "hotkey": shell.hotkey_text(),
         "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
+        "folders": shell.folders(),
+        "skipped": settings.skipped,
+        "skipTypes": settings.skip_types,
+        "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
+        "storage": storage(&shell),
+        "state": shell.snapshot(),
+        "version": app.package_info().version.to_string(),
         "debug": shell.options.debug_settings,
     })
+}
+
+/// Where the model and the index are, and how big the index is on disk (its database and write-ahead log).
+fn storage(shell: &Shell) -> Value {
+    let index = shell.options.index_folder();
+    let size = |name: &str| -> u64 {
+        let Some(index) = &index else { return 0 };
+        ["", "-wal", "-shm"].iter().filter_map(|end| std::fs::metadata(index.join(format!("{name}{end}"))).ok()).map(|file| file.len()).sum()
+    };
+    let models = shell.options.models.clone().or_else(|| {
+        if cfg!(windows) {
+            std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("DigUp").join("Models"))
+        } else {
+            let data = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+            data.map(|data| data.join("digup").join("Models"))
+        }
+    });
+    json!({
+        "index": index.as_ref().map(|folder| folder.display().to_string()),
+        "indexBytes": size("index.sqlite"),
+        "codeBytes": size("code.sqlite"),
+        "models": models.map(|folder| folder.display().to_string()),
+    })
+}
+
+/// Settings → Folders: stops searching a folder (and what's skipped inside it); its files leave the index.
+#[tauri::command]
+fn remove_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        let inside = |path: &str| Path::new(path).starts_with(&folder);
+        settings.folders.retain(|path| path != &folder);
+        settings.skipped.retain(|path| !inside(path));
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    shell.prune.store(true, Ordering::SeqCst);
+    apply_folders(&app);
+    Ok(())
+}
+
+/// Settings → Folders: the folders skipped inside the ones searched.
+#[tauri::command]
+fn set_skipped(app: AppHandle, shell: State<'_, Arc<Shell>>, skipped: Vec<String>) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.skipped = skipped;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    apply_folders(&app);
+    Ok(())
+}
+
+/// Settings → Folders: file types to leave out, as typed ("heic, .txt").
+#[tauri::command]
+fn set_skip_types(app: AppHandle, shell: State<'_, Arc<Shell>>, types: String) -> Result<Vec<String>, String> {
+    let mut list: Vec<String> = types
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|kind| kind.trim().trim_start_matches('.').to_lowercase())
+        .filter(|kind| !kind.is_empty())
+        .collect();
+    list.dedup();
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        if settings.skip_types == list {
+            return Ok(list);
+        }
+        settings.skip_types = list.clone();
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    apply_folders(&app);
+    Ok(list)
+}
+
+/// Settings → Folders: "Index only at set hours".
+#[tauri::command]
+fn set_index_hours(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool, start: u32, end: u32) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.index_hours_on = on;
+        settings.index_hours = hours::Hours { start: start % 1440, end: end % 1440 };
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    held_now(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1006,6 +1125,37 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     *shell.index_item.lock().unwrap() = Some(index);
     *shell.pause_item.lock().unwrap() = Some(pause);
     Ok(())
+}
+
+/// "Index only at set hours": every half minute, whether indexing may run now. Leaving the hours stops the index helper
+/// (what it was reading is read again later); entering them starts one.
+fn watch_hours(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        held_now(&app);
+        std::thread::sleep(Duration::from_secs(30));
+    });
+}
+
+/// Brings the hold up to date with the clock and the setting.
+fn held_now(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let held = {
+        let settings = shell.settings.lock().unwrap();
+        (settings.index_hours_on && !settings.index_hours.contains(hours::now())).then(|| hours::clock(settings.index_hours.start))
+    };
+    let before = std::mem::replace(&mut shell.status.lock().unwrap().held_until, held.clone());
+    if before == held {
+        return;
+    }
+    if held.is_some() {
+        let stopping = shell.clone();
+        std::thread::spawn(move || stopping.index.stop());
+    }
+    changed(app);
+    if held.is_none() {
+        run_index(app);
+    }
 }
 
 /// Pause Indexing stops the index helper (what it was reading is read again later) and starts none until Resume; search

@@ -2,6 +2,7 @@
 //! JSON file in the app's config folder (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on
 //! Linux). Launch arguments (`--roots`, `--hotkey`) stand in for it in dev runs.
 
+use crate::hours::Hours;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -20,6 +21,9 @@ pub struct Settings {
     pub set_up: bool,
     /// The panel sits centered where the desktop places windows itself (Wayland), in a window that fills the screen.
     pub center_panel: bool,
+    /// Index only between these times of day (hours.rs); the times are kept while it's off.
+    pub index_hours_on: bool,
+    pub index_hours: Hours,
 }
 
 impl Settings {
