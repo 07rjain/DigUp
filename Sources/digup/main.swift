@@ -476,8 +476,9 @@ func speed(_ args: Arguments) throws {
     }
 }
 
-/// The model timed on the processor alone, in a process of its own (llama.cpp loads its backends once a process).
-func processorAlone(folder: URL, tries: Int) throws -> (times: ModelSpeed.Times, load: Double) {
+/// The model timed on the processor alone, in a process of its own (llama.cpp loads its backends once a process), with
+/// the vectors it made.
+func processorAlone(folder: URL, tries: Int) throws -> (times: ModelSpeed.Times, load: Double, vectors: [String: [Float]]) {
     guard let program = Bundle.main.executableURL else { throw CLIError("where is digup?") }
     let process = Process()
     process.executableURL = program
@@ -494,13 +495,15 @@ func processorAlone(folder: URL, tries: Int) throws -> (times: ModelSpeed.Times,
           let seconds = reply["seconds"] as? [String: Double], let load = reply["load"] as? Double,
           let times = ModelSpeed.Times(fields: seconds)
     else { throw CLIError("the processor's speed check failed") }
-    return (times, load)
+    let vectors = (reply["vectors"] as? [String: [Double]] ?? [:]).mapValues { $0.map(Float.init) }
+    return (times, load, vectors)
 }
 
 /// `digup speed --model [--if-needed] [--json]`: the model timed on this machine, kept in costs.json beside the index
 /// for estimates. Where there's a GPU it's timed against the processor alone, and the faster is kept (`device`) for
 /// every helper: a weak integrated GPU can be slower than its processor (an i5-8350U's UHD 620 under Vulkan: 76 s
-/// against 44 s). `--if-needed` leaves one measured before alone, unless it predates that choice. The shell runs it once
+/// against 44 s). The GPU is kept only if its vectors are the processor's too (cosine 0.999, as ReferenceVectorTests
+/// asks): Mesa's lavapipe made pictures and sound at 0.94–0.97. `--if-needed` leaves one measured before alone, unless it predates that choice. The shell runs it once
 /// the model is in. `--measure-only`: the times, nothing kept (the processor's run, in a process of its own).
 func modelSpeed(_ args: Arguments) throws {
     let folder = args.indexFolder
@@ -515,19 +518,21 @@ func modelSpeed(_ args: Arguments) throws {
     let started = Date()
     let model = try makeEmbedder(textOnly: false, log: folder.appendingPathComponent("worker.log"))
     let loaded = Date()
-    var times = try ModelSpeed.measure(model, tries: tries)
+    let measured = try ModelSpeed.measure(model, tries: tries)
     model.close()
-    var load = loaded.timeIntervalSince(started)
+    var (times, load) = (measured.times, loaded.timeIntervalSince(started))
     if args.flags.contains("--measure-only") {
-        emit(["event": "speed", "seconds": times.fields, "load": load])
+        emit(["event": "speed", "seconds": times.fields, "load": load, "vectors": measured.vectors])
         return
     }
     var compared: [String: Any] = [:]
     if compares {
         let alone = try processorAlone(folder: folder, tries: tries)
-        compared = ["gpu": times.fields.merging(["load": load]) { $1 }, "cpu": alone.times.fields.merging(["load": alone.load]) { $1 }]
+        let agreement = ModelSpeed.agreement(measured.vectors, alone.vectors)
+        compared = ["gpu": times.fields.merging(["load": load]) { $1 }, "cpu": alone.times.fields.merging(["load": alone.load]) { $1 },
+                    "agreement": agreement]
         let sum = { (times: ModelSpeed.Times) in times.fields.values.reduce(0, +) }
-        speed.device = sum(alone.times) < sum(times) ? "cpu" : "gpu"
+        speed.device = agreement >= 0.999 && sum(times) <= sum(alone.times) ? "gpu" : "cpu"
         if speed.device == "cpu" { (times, load) = (alone.times, alone.load) }
     }
     speed.kinds = ModelSpeed.factors(times)

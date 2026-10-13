@@ -39,8 +39,9 @@ enum ModelSpeed {
         }
     }
 
-    /// Times each input once after a first run (the backend loads, a GPU compiles its kernels), the best of `tries`.
-    static func measure(_ model: any Embedder, tries: Int = 1) throws -> Times {
+    /// Times each input once after a first run (the backend loads, a GPU compiles its kernels), the best of `tries`;
+    /// with the vectors it made of them ("text", "picture", "sound"), for comparing the GPU's with the processor's.
+    static func measure(_ model: any Embedder, tries: Int = 1) throws -> (times: Times, vectors: [String: [Float]]) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DigUp-speed-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -49,6 +50,10 @@ enum ModelSpeed {
         try wave(seconds: 30).write(to: sound)
         let text = Prompts.document(title: "notes.txt", text: page)
 
+        var vectors: [String: [Float]] = [:]
+        vectors["text"] = try model.embedTexts([text]).first
+        vectors["picture"] = try model.embedImages([picture.path], budget: 140).first?.vector
+        vectors["sound"] = try model.embedAudio([sound.path]).first?.vector
         func best(_ work: () throws -> Void) throws -> Double {
             try work()
             var fastest = Double.infinity
@@ -62,10 +67,21 @@ enum ModelSpeed {
         func embedded(_ result: [Embedding]) throws {
             if let problem = result.first?.error { throw CLIError("the speed check's input failed: \(problem)") }
         }
-        return Times(
+        let times = Times(
             text: try best { _ = try model.embedTexts([text]) },
             picture: try best { try embedded(model.embedImages([picture.path], budget: 140)) },
             sound: try best { try embedded(model.embedAudio([sound.path])) })
+        return (times, vectors)
+    }
+
+    /// How far two runs' vectors agree: the least cosine over the inputs both made (0 when one is missing).
+    static func agreement(_ one: [String: [Float]], _ other: [String: [Float]]) -> Double {
+        ["text", "picture", "sound"].map { name -> Double in
+            guard let a = one[name], let b = other[name], a.count == b.count, !a.isEmpty else { return 0 }
+            let dot = zip(a, b).reduce(0.0) { $0 + Double($1.0) * Double($1.1) }
+            let norms = sqrt(a.reduce(0.0) { $0 + Double($1 * $1) }) * sqrt(b.reduce(0.0) { $0 + Double($1 * $1) })
+            return norms > 0 ? dot / norms : 0
+        }.min() ?? 0
     }
 
     /// Each of `Costs`' fields as this machine compares. A cost's share that is the model's work goes as this machine ran
