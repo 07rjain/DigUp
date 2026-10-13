@@ -47,6 +47,19 @@ function openResult(hit) {
   return invoke("open_path", { path: hit.path, ...placeToOpen(hit) });
 }
 
+/// Ctrl+C on a result: the file, to paste elsewhere; but text selected in the page, or in the field before the arrows or
+/// a click chose a result (`navigated`), is copied as text. True when it took the keys.
+function copyResult(event, hit, navigated) {
+  const field = document.activeElement;
+  const fieldText = field?.selectionStart != null && field.selectionStart !== field.selectionEnd;
+  // (WebKit may count the field's selected text in the page's.)
+  const textSelected = fieldText ? !navigated : Boolean(window.getSelection()?.toString());
+  if (!hit || textSelected) return false;
+  event.preventDefault();
+  invoke("copy_file", { path: hit.path }).catch(() => {});
+  return true;
+}
+
 /// Where a result opens: a PDF's page past the first, a recording's or video's moment past its first second (the Mac
 /// app's Moments).
 function placeToOpen(hit) {

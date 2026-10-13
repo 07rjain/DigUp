@@ -344,6 +344,7 @@ function wire(item, hit) {
       ["Open", () => open(hit)],
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
+      ["Copy", () => invoke("copy_file", { path: hit.path }).catch(failed)],
       ["Copy Path", () => navigator.clipboard.writeText(hit.path).catch(() => {})],
     ]);
   };
@@ -957,6 +958,9 @@ document.addEventListener("keydown", (event) => {
         event.preventDefault();
         invoke("close_window").catch(() => {});
         return;
+      case "c":
+        copyResult(event, state.hasResults && state.query.trim() ? selectedHit() : null, state.navigated);
+        return;
       case "f":
       case "l":
         event.preventDefault();
@@ -1103,6 +1107,12 @@ function report() {
   if (state.info.debugSettings) {
     setTimeout(() => $("settings").click(), 500);
     return;
+  }
+  // --debug-copy: the selected result on the clipboard, as Ctrl+C puts it.
+  if (state.info.debugCopy && selectedHit()) {
+    invoke("copy_file", { path: selectedHit().path })
+      .then(() => "copied", (error) => `not copied: ${error}`)
+      .then((copied) => invoke("debug_report", { report: { copied, path: selectedHit()?.path } }));
   }
   // Dev snapshots (window.html?big): the selected result's big preview, as Space shows it.
   if (new URLSearchParams(location.search).has("big")) toggleBig();

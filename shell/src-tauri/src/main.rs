@@ -5,6 +5,7 @@
 // behavior.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod code;
 mod editors;
 mod helper;
@@ -376,6 +377,12 @@ fn open_code(app: AppHandle, shell: State<'_, Arc<Shell>>, path: String, line: u
     app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
 }
 
+/// Ctrl+C on a result: the file on the clipboard, to paste in a file manager, a mail or a chat.
+#[tauri::command]
+fn copy_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    clipboard::copy_file(&window, Path::new(&path)).inspect_err(|error| eprintln!("digup-shell: can't copy {path}: {error}"))
+}
+
 /// Shows a result in the file manager, selected.
 #[tauri::command]
 fn reveal(app: AppHandle, path: String) -> Result<(), String> {
@@ -443,6 +450,7 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "hasCode": !shell.code_folders().is_empty(),
         "debugQuery": shell.options.debug_window,
         "debugSettings": shell.options.debug_settings,
+        "debugCopy": shell.options.debug_copy,
     })
 }
 
@@ -564,7 +572,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");

@@ -41,6 +41,8 @@ pub struct Options {
     pub debug_window: Option<String>,
     /// Debug runs with `debug_window`: the window then opens Settings as its button does, and Settings reports instead.
     pub debug_settings: bool,
+    /// Debug runs with `debug_window`: after its report the window copies its selected result, as Ctrl+C does.
+    pub debug_copy: bool,
     /// A desktop shortcut's command (hotkey.rs): show or hide the panel of the DigUp already running, or start DigUp
     /// with the panel up.
     pub toggle: bool,
@@ -66,6 +68,7 @@ impl Options {
             debug_show: false,
             debug_window: None,
             debug_settings: false,
+            debug_copy: false,
             toggle: false,
             at_login: false,
         };
@@ -89,6 +92,7 @@ impl Options {
                 "--debug-show" => options.debug_show = true,
                 "--debug-window" => options.debug_window = Some(value()?),
                 "--debug-settings" => options.debug_settings = true,
+                "--debug-copy" => options.debug_copy = true,
                 "--toggle" => options.toggle = true,
                 "--at-login" => options.at_login = true,
                 _ => return Err(format!("unknown argument {arg}")),

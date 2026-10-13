@@ -460,6 +460,11 @@ document.addEventListener("keydown", (event) => {
       else if (state.selection === WEAKER) toggleWeaker();
       else openSelected();
       break;
+    case "c":
+    case "C":
+      if (!modifier || event.altKey || event.shiftKey || state.selection === WEAKER) return;
+      copyResult(event, selectedHit(), state.navigated);
+      break;
     case "o":
     case "O":
       if (!modifier || event.altKey || event.shiftKey) return;
