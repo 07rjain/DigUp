@@ -61,6 +61,7 @@ let recording = false;
 
 $("change-shortcut").onclick = () => {
   recording = true;
+  invoke("hold_hotkey", { held: true }).catch(() => {});
   $("recording").textContent = "Press the new shortcut. Esc keeps the one you have.";
   renderGeneral();
 };
@@ -70,6 +71,7 @@ document.addEventListener("keydown", async (event) => {
   event.preventDefault();
   if (event.key === "Escape") {
     recording = false;
+    invoke("hold_hotkey", { held: false }).catch(() => {});
     renderGeneral();
     return;
   }
@@ -88,6 +90,15 @@ document.addEventListener("keydown", async (event) => {
   } catch (error) {
     fail(error);
   }
+  invoke("hold_hotkey", { held: false }).catch(() => {});   // the old one back, if the new one was refused
+  renderGeneral();
+});
+
+// Leaving the window (or closing it) mid-recording keeps the shortcut there was.
+window.addEventListener("blur", () => {
+  if (!recording) return;
+  recording = false;
+  invoke("hold_hotkey", { held: false }).catch(() => {});
   renderGeneral();
 });
 

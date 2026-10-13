@@ -601,7 +601,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -1208,6 +1208,22 @@ fn storage(shell: &Shell) -> Value {
     })
 }
 
+/// Settings → General, recording a new shortcut: the current one is let go meanwhile (`held`), so that pressing it
+/// reaches the page instead of opening the panel, and taken again after.
+#[tauri::command]
+fn hold_hotkey(app: AppHandle, shell: State<'_, Arc<Shell>>, held: bool) {
+    if shell.shortcut != Method::Grab {
+        return;
+    }
+    let hotkey = shell.hotkey();
+    let shortcuts = app.global_shortcut();
+    if held {
+        let _ = shortcuts.unregister(hotkey.as_str());
+    } else if !shortcuts.is_registered(hotkey.as_str()) {
+        let _ = shortcuts.register(hotkey.as_str());
+    }
+}
+
 /// Settings → General: a new shortcut for the panel, where DigUp grabs it itself (Windows, X11; GNOME and KDE keep it in
 /// their own settings). The new one is registered before the old one goes, so one another app holds is refused and the
 /// old one stays. Returns the shortcut as it's shown.
@@ -1221,7 +1237,9 @@ fn set_hotkey(app: AppHandle, shell: State<'_, Arc<Shell>>, hotkey: String) -> R
         let shortcuts = app.global_shortcut();
         shortcuts.register(hotkey.as_str())
             .map_err(|_| format!("{} can't be used: another app may have it.", shortcut_text(&hotkey)))?;
-        let _ = shortcuts.unregister(old.as_str());
+        if shortcuts.is_registered(old.as_str()) {
+            let _ = shortcuts.unregister(old.as_str());
+        }
         let mut settings = shell.settings.lock().unwrap();
         settings.hotkey = hotkey;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
