@@ -41,12 +41,12 @@ if cargo tauri --version > /dev/null 2>&1; then tauri=(cargo tauri); fi
 # The helper folder goes in as the packages' resources here only: Tauri checks resources on every build.
 (cd shell/src-tauri && "${tauri[@]}" build --bundles deb,appimage --config '{"bundle":{"resources":{"helper/":"helper/"}}}')
 
-# The package's name: Tauri spells "DigUp" as "dig-up".
+# Packed again with xz (Tauri's gzip makes it 51 MB, xz 32). Its name stays "dig-up" (Tauri's spelling of the product's
+# name): Debian and Ubuntu already have a "digup" (a digest updating tool), which would replace DigUp at the next update.
 deb=$(ls shell/src-tauri/target/release/bundle/deb/*.deb)
 repack=$(mktemp -d)
 chmod 755 "$repack"   # the package's root: mktemp's 700 would ship as /'s mode
 dpkg-deb -R "$deb" "$repack"
-sed -i 's/^Package: dig-up$/Package: digup/' "$repack/DEBIAN/control"
 dpkg-deb --root-owner-group -Zxz -b "$repack" "$deb" > /dev/null
 rm -rf "$repack"
 ls -la shell/src-tauri/target/release/bundle/deb/*.deb shell/src-tauri/target/release/bundle/appimage/*.AppImage
