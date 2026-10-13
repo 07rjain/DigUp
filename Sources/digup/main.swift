@@ -665,6 +665,13 @@ do {
     if command != "speed", MeasuredCosts.load(from: args.indexFolder).speed?.device == "cpu" {
         LlamaEmbedder.cpuOnly = true
     }
+    #if !os(macOS)
+    // Queries are a few words: the processor encodes one in hundredths of a second, and starts sooner than a GPU (an RTX
+    // 4050 laptop: a search from scratch 1.8 s on its i7, 3.0 s on the GPU under Vulkan). Indexing keeps the GPU.
+    if command == "search-service" {
+        LlamaEmbedder.cpuOnly = true
+    }
+    #endif
     switch command {
     case "estimate": try estimate(args)
     case "index": try index(args)
