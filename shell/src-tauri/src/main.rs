@@ -77,6 +77,8 @@ struct Shell {
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
     watchdog_stops: Mutex<Vec<Instant>>,
+    /// The window's size inside its frame, as its page last reported it (GTK's own counts its title bar and shadow).
+    window_inner: Mutex<Option<(f64, f64)>>,
     /// A search the panel hands the window (its query, and the kind of results to show): taken when the window opens.
     window_search: Mutex<Option<(String, Option<String>)>>,
     /// Debug runs with setup: the panel's query waits until the first index is in.
@@ -489,6 +491,12 @@ fn pause_indexing(app: AppHandle, paused: bool) {
     set_paused(&app, paused);
 }
 
+/// The window's page, at its size now (its inside, in logical pixels).
+#[tauri::command]
+fn window_resized(shell: State<'_, Arc<Shell>>, width: f64, height: f64) {
+    *shell.window_inner.lock().unwrap() = Some((width, height));
+}
+
 /// Ctrl+W in a window.
 #[tauri::command]
 fn close_window(window: tauri::WebviewWindow) {
@@ -556,7 +564,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor
+            remove_code_folder, turn_off_code, set_code_editor, window_resized
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -648,6 +656,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         tray_look: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
+        window_inner: Mutex::new(None),
         window_search: Mutex::new(None),
         debug_query_sent: AtomicBool::new(false),
         quitting: AtomicBool::new(false),
@@ -857,6 +866,9 @@ fn stop_helpers(app: &AppHandle) {
 }
 
 fn quit(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW) {
+        remember_place(&window);
+    }
     app.state::<Arc<Shell>>().quitting.store(true, Ordering::SeqCst);
     stop_helpers(app);
     app.exit(0);
@@ -974,15 +986,69 @@ fn show_window(app: &AppHandle) -> tauri::Result<()> {
     }
     // Debug runs look at it hidden: a window on screen takes the keyboard.
     let hidden = shell.options.debug_window.is_some() && !shell.options.debug_show;
-    let (width, height) = window_size(app);
-    WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("window.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("window.html".into()))
         .title("DigUp")
-        .inner_size(width, height)
         .min_inner_size(820.0, 520.0)
-        .center()
-        .visible(!hidden)
-        .build()?;
+        .visible(false);
+    // Where it was left, at the size it had, while that's still on a screen; else sized to this screen, centered.
+    let place = shell.settings.lock().unwrap().window.clone().filter(|place| place.width >= 820.0 && place.height >= 520.0);
+    let position = place.as_ref().and_then(|place| place.x.zip(place.y)).filter(|&(x, y)| {
+        app.monitor_from_point(f64::from(x) + 40.0, f64::from(y) + 20.0).ok().flatten().is_some()
+    });
+    match &place {
+        Some(place) => builder = builder.inner_size(place.width, place.height).maximized(place.maximized),
+        None => {
+            let (width, height) = window_size(app);
+            builder = builder.inner_size(width, height);
+        }
+    }
+    if position.is_none() {
+        builder = builder.center();
+    }
+    let window = builder.build()?;
+    if let Some((x, y)) = position {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+    if !hidden {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let closing = window.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { .. } = event {
+            remember_place(&closing);
+        }
+    });
     Ok(())
+}
+
+/// Keeps the window's place as it closes (and as DigUp quits with it open), for the next time; not a hidden debug
+/// run's.
+fn remember_place(window: &tauri::WebviewWindow) {
+    let shell = window.state::<Arc<Shell>>();
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let maximized = window.is_maximized().unwrap_or(false);
+    let mut settings = shell.settings.lock().unwrap();
+    let mut place = settings.window.clone().unwrap_or_default();
+    place.maximized = maximized;
+    // A maximized window keeps the size and place it comes back to.
+    if !maximized {
+        let reported = *shell.window_inner.lock().unwrap();
+        let measured = || window.inner_size().ok().zip(window.scale_factor().ok())
+            .map(|(size, scale)| size.to_logical::<f64>(scale)).map(|size| (size.width, size.height));
+        if let Some((width, height)) = reported.or_else(measured) {
+            (place.width, place.height) = (width, height);
+        }
+        if !shell.wayland {
+            if let Ok(position) = window.outer_position() {
+                (place.x, place.y) = (Some(position.x), Some(position.y));
+            }
+        }
+    }
+    settings.window = Some(place);
+    let _ = settings.save(&shell.settings_path);
 }
 
 /// The window's size: 1040 × 700, or less on a small screen (a laptop's 1366 × 768 at 125% has 1093 × 614 to show

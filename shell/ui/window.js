@@ -1034,6 +1034,17 @@ tauri.event.listen("window-search", ({ payload }) => {
 
 window.addEventListener("focus", () => ask({ op: "prewarm" }).catch(() => {}));
 
+// Its size, for the next time it opens (the shell keeps it when the window closes).
+let sizeTimer = null;
+function reportSize() {
+  invoke("window_resized", { width: window.innerWidth, height: window.innerHeight }).catch(() => {});
+}
+window.addEventListener("resize", () => {
+  clearTimeout(sizeTimer);
+  sizeTimer = setTimeout(reportSize, 300);
+});
+reportSize();
+
 /// What's indexed of each kind under the chosen folders (the home's counts), at most every two seconds while indexing.
 let indexedTimer = null;
 function loadIndexed() {

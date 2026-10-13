@@ -31,6 +31,20 @@ pub struct Settings {
     pub code_editor: String,
     /// Code search was turned off and its index is still to be deleted (Windows won't delete a file a helper has open).
     pub delete_code_index: bool,
+    /// Where the window was left, for the next time it opens.
+    pub window: Option<WindowPlace>,
+}
+
+/// The window's size inside its frame (logical pixels), where it was (physical; Wayland doesn't tell), and whether it
+/// filled the screen.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WindowPlace {
+    pub width: f64,
+    pub height: f64,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub maximized: bool,
 }
 
 impl Settings {
