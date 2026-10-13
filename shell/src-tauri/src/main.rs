@@ -10,6 +10,7 @@ mod hotkey;
 mod options;
 mod settings;
 mod status;
+mod tray_icon;
 mod watcher;
 mod wayland;
 
@@ -60,8 +61,12 @@ struct Shell {
     /// What indexing is doing, from the index helper's events (status.rs).
     status: Mutex<Status>,
     watcher: Mutex<Option<FolderWatcher>>,
-    /// The tray menu's first line: what's going on.
+    /// The tray menu's first line (what's going on), Index Now, and Pause or Resume Indexing.
     status_item: Mutex<Option<MenuItem<Wry>>>,
+    index_item: Mutex<Option<MenuItem<Wry>>>,
+    pause_item: Mutex<Option<MenuItem<Wry>>>,
+    /// What the tray icon shows now (tray_icon.rs): redrawn only when that changes.
+    tray_look: Mutex<Option<tray_icon::Look>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
@@ -417,6 +422,11 @@ fn quit_app(app: AppHandle) {
     quit(&app);
 }
 
+#[tauri::command]
+fn pause_indexing(app: AppHandle, paused: bool) {
+    set_paused(&app, paused);
+}
+
 /// Ctrl+W in a window.
 #[tauri::command]
 fn close_window(window: tauri::WebviewWindow) {
@@ -482,7 +492,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
-            app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window
+            app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -562,6 +572,9 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         watcher: Mutex::new(None),
         status: Mutex::new(Status::default()),
         status_item: Mutex::new(None),
+        index_item: Mutex::new(None),
+        pause_item: Mutex::new(None),
+        tray_look: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
         window_search: Mutex::new(None),
@@ -683,7 +696,7 @@ fn watch_folders(app: &AppHandle) {
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
     if shell.folders().is_empty() || !shell.model_ready() || shell.measuring.load(Ordering::SeqCst)
-        || shell.quitting.load(Ordering::SeqCst) {
+        || shell.quitting.load(Ordering::SeqCst) || shell.status.lock().unwrap().paused {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
@@ -944,21 +957,20 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open DigUp", true, None::<&str>)?;
     let folders = MenuItem::with_id(app, "folders", "Choose Folders…", true, None::<&str>)?;
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause", "Pause Indexing", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &search, &open, &folders, &index, &settings, &PredefinedMenuItem::separator(app)?,
+        &[&status, &separator, &search, &open, &folders, &index, &pause, &settings, &PredefinedMenuItem::separator(app)?,
           &quit_item],
     )?;
-    // A Mac's menu bar takes a template (it colors it); trays elsewhere show the app's own small icon.
-    #[cfg(target_os = "macos")]
-    let icon = tauri::include_image!("icons/tray-template.png");
-    #[cfg(not(target_os = "macos"))]
-    let icon = tauri::include_image!("icons/tray.png");
+    // The Mac app's mark, drawn in one color (a Mac's menu bar takes it as a template and colors it).
+    let look = tray_icon::Look::new(None, false);
+    *shell.tray_look.lock().unwrap() = Some(look);
     TrayIconBuilder::with_id("digup")
-        .icon(icon)
+        .icon(tray_icon::image(look))
         .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("DigUp")
         .menu(&menu)
@@ -970,6 +982,10 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
                 let _ = show_setup(app);
             }),
             "index" => run_index(app),
+            "pause" => {
+                let paused = app.state::<Arc<Shell>>().status.lock().unwrap().paused;
+                set_paused(app, !paused);
+            }
             "settings" => later(app, |app| {
                 let _ = show_settings(app);
             }),
@@ -987,7 +1003,25 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         })
         .build(app)?;
     *shell.status_item.lock().unwrap() = Some(status);
+    *shell.index_item.lock().unwrap() = Some(index);
+    *shell.pause_item.lock().unwrap() = Some(pause);
     Ok(())
+}
+
+/// Pause Indexing stops the index helper (what it was reading is read again later) and starts none until Resume; search
+/// goes on. As on the Mac, a new launch isn't paused.
+fn set_paused(app: &AppHandle, paused: bool) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    shell.status.lock().unwrap().paused = paused;
+    if paused {
+        // It may take a moment to leave (up to two seconds): not on the main thread.
+        let stopping = shell.clone();
+        std::thread::spawn(move || stopping.index.stop());
+    }
+    changed(app);
+    if !paused {
+        run_index(app);
+    }
 }
 
 /// A problem to see in the tray's first line (the shortcut is taken…), until indexing next has news.
@@ -997,13 +1031,32 @@ fn set_status(app: &AppHandle, text: &str) {
     }
 }
 
-/// Indexing or the model moved on: the tray's first line and every page follow (status.rs has the words).
+/// Indexing or the model moved on: the tray's first line and items, and every page, follow (status.rs has the words).
 fn changed(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let snapshot = shell.snapshot();
+    let folders = !shell.folders().is_empty();
     if let Some(status) = shell.status_item.lock().unwrap().as_ref() {
         let _ = status.set_text(snapshot["line"].as_str().unwrap_or_default());
     }
+    if let Some(index) = shell.index_item.lock().unwrap().as_ref() {
+        let _ = index.set_enabled(folders && snapshot["busy"] == false);
+    }
+    if let Some(pause) = shell.pause_item.lock().unwrap().as_ref() {
+        let _ = pause.set_text(if snapshot["paused"] == true { "Resume Indexing" } else { "Pause Indexing" });
+        let _ = pause.set_enabled(folders);
+    }
+    // The ring when it moves a step, the bars when paused.
+    let look = tray_icon::Look::new(snapshot["progress"].as_f64(), snapshot["paused"] == true);
+    let mut shown = shell.tray_look.lock().unwrap();
+    if shown.is_some() && *shown != Some(look) {
+        if let Some(tray) = app.tray_by_id("digup") {
+            if tray.set_icon(Some(tray_icon::image(look))).is_ok() {
+                *shown = Some(look);
+            }
+        }
+    }
+    drop(shown);
     let _ = app.emit("state", snapshot);
 }
 

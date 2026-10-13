@@ -797,10 +797,12 @@ function hideMenu() {
 /// ⋯: what the tray's menu has, for desktops without a tray.
 function showMainMenu() {
   const button = $("more").getBoundingClientRect();
-  const busy = state.app.progress != null || state.app.model?.state !== "ready";
+  const folders = state.info.folders.length > 0, paused = state.app.paused === true;
   showMenu(button.right - 200, button.bottom + 4, [
     ["Choose Folders…", () => invoke("choose_folders").catch(failed)],
-    ["Index Now", () => invoke("index_now").catch(failed), null, !busy && state.info.folders.length > 0],
+    ["Index Now", () => invoke("index_now").catch(failed), null, folders && state.app.busy === false],
+    [paused ? "Resume Indexing" : "Pause Indexing", () => invoke("pause_indexing", { paused: !paused }).catch(failed),
+     null, folders],
     null,
     ["Settings…", () => invoke("open_settings").catch(failed), `${MOD},`],
     null,

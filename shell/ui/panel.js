@@ -37,6 +37,7 @@ const state = {
   height: FIELD_HEIGHT,
   error: null,
   indexing: null,        // {done, total} while the index helper works through new files
+  caveat: null,          // why results may be incomplete right now (the shell's status.rs)
 };
 let debugPending = false;
 
@@ -360,9 +361,9 @@ function renderFooter() {
     summary = state.encoder === "starting" ? "Matching words; meaning search is warming up…" : "Matching words…";
   } else if (state.phase === "wordsOnly") summary = "Words only: meaning search isn't available";
   else if (state.phase === "codeHint") summary = "Searching your code";
+  // Results while indexing (or before the model is in) may be missing some: that, where they're counted.
+  else if (state.caveat && !state.isCode) summary = state.caveat;
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
-  // Results while indexing are partial: say so where they're counted.
-  if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
   $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}`;
 }
@@ -419,18 +420,28 @@ tauri.event.listen("helper", ({ payload }) => {
     state.encoder = event.state;
     if (state.phase !== "empty") renderFooter();
   }
-  if (from === "index") {
-    if (event.event === "file" && event.total) {
-      state.indexing = { done: event.done, total: event.total };
-      $activity.textContent = `Indexing ${event.done}/${event.total}`;
-      $activity.hidden = false;
-    } else if (event.event === "idle" || event.event === "exit") {
-      state.indexing = null;
-      $activity.hidden = true;
-    }
-    if (state.phase !== "empty") renderFooter();
-  }
 });
+
+/// Indexing and the model, from the shell: a badge beside the field while results may be incomplete ("Indexing 42%"),
+/// as the Mac's panel has, with its progress as a ring.
+function showState(app) {
+  state.indexing = app.indexing || null;
+  state.caveat = app.caveat || null;
+  $activity.hidden = !app.badge;
+  if (app.badge) {
+    const length = 2 * Math.PI * 4.6, done = Math.max(0.02, Math.min(1, app.progress ?? 0));
+    $activity.innerHTML = app.progress == null ? "" : `<svg viewBox="0 0 12 12"><circle class="track" cx="6" cy="6" `
+      + `r="4.6"/><circle class="done" cx="6" cy="6" r="4.6" stroke-dasharray="${(length * done).toFixed(2)} ${length.toFixed(2)}"/></svg>`;
+    $activity.append(app.badge);
+    $activity.title = app.line || "";
+  }
+  if (state.phase === "empty") return;
+  renderFooter();
+  if (!state.strong.length && !state.weaker.length) renderPreview();   // "Nothing yet": still indexing
+}
+
+tauri.event.listen("state", ({ payload }) => showState(payload));
+invoke("app_state").then(showState).catch(() => {});
 
 // Debug runs (--debug-query): type the query in, and once the meaning results and their pictures are in, report
 // what the panel shows.

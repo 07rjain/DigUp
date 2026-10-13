@@ -32,6 +32,8 @@ pub struct Status {
     pub unreadable: Vec<String>,
     /// The speed check before the first index is running.
     pub measuring: bool,
+    /// Indexing is paused (Pause Indexing): nothing is read until it's resumed; search goes on.
+    pub paused: bool,
 }
 
 impl Status {
@@ -51,7 +53,14 @@ impl Status {
             "sync" if count("new") > 0 => self.activity = Activity::Indexing { done: 0, total: count("new") },
             // A sync after a failure: the helper works again.
             "sync" if matches!(self.activity, Activity::Failed(_)) => self.activity = Activity::Idle,
-            "file" => self.activity = Activity::Indexing { done: count("done"), total: count("total") },
+            "file" => {
+                self.activity = Activity::Indexing { done: count("done"), total: count("total") };
+                // The counts come with a sync; each file read since leaves "waiting".
+                self.pending = self.pending.saturating_sub(1);
+                if matches!(event["state"].as_str(), Some("done" | "partial")) {
+                    self.searchable += 1;
+                }
+            }
             "rest" => {
                 self.activity = Activity::Finishing { done: count("done"), total: count("total"), files: count("files") }
             }
@@ -97,10 +106,32 @@ impl Status {
                 format!("Reading the rest of {which} · {}%", percent(done, total))
             }
             _ if self.pending > 0 => {
-                format!("{} {} waiting to be indexed", number(self.pending), plural(self.pending, "file", "files"))
+                let waiting = format!("{} {} waiting", number(self.pending), plural(self.pending, "file", "files"));
+                if self.paused { format!("Paused · {waiting}") } else { format!("{waiting} to be indexed") }
             }
-            _ => format!("{} {} indexed", number(self.searchable), plural(self.searchable, "file", "files")),
+            _ => format!("{} {} indexed", number(self.searchable), plural(self.searchable, "file", "files"))
+                + if self.paused { " · paused" } else { "" },
         }
+    }
+
+    /// A few words beside the panel's field while results may be incomplete: "Indexing 42%", "Downloading model · 42%".
+    pub fn badge(&self, model: &Value) -> Option<String> {
+        if model["state"] == "downloading" {
+            return Some(format!("Downloading model · {}%", (fraction(model) * 100.0) as u64));
+        }
+        if self.paused && self.pending > 0 {
+            return Some("Indexing paused".into());
+        }
+        match self.activity {
+            Activity::Indexing { done, total } if total > 0 => Some(format!("Indexing {}%", percent(done, total))),
+            _ => None,
+        }
+    }
+
+    /// Something is under way or can't start: Index Now has nothing to add.
+    pub fn busy(&self, model: &Value) -> bool {
+        model["state"] != "ready" || self.measuring || self.paused
+            || matches!(self.activity, Activity::Indexing { .. } | Activity::Finishing { .. })
     }
 
     /// 0…1 while something is under way (the download, then an indexing pass or the rest of long files).
@@ -151,6 +182,9 @@ impl Status {
             "pending": self.pending,
             "unfinished": self.unfinished,
             "measuring": self.measuring,
+            "paused": self.paused,
+            "badge": self.badge(model),
+            "busy": self.busy(model),
             "activity": match self.activity {
                 Activity::Starting => "starting",
                 Activity::Idle => "idle",
