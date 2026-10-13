@@ -27,7 +27,8 @@
 
     <section class="page" id="folders" hidden>
       <h2>What should DigUp search?</h2>
-      <p class="subtitle">Pick folders. You can change this anytime from the tray: Choose Folders…</p>
+      <p class="subtitle" id="folders-subtitle">Pick folders, and open one to leave out some of its subfolders. The
+        first pass reads everything once; after that DigUp keeps up with changes as they happen.</p>
       <div class="folders" id="folder-list"></div>
       <button class="link" id="add-folder">Add Folder…</button>
       <p class="note">DigUp only reads files: it never changes, moves or uploads them.</p>
@@ -53,13 +54,22 @@
         <img class="icon" src="icon.png" alt="">
         <h2>You're all set</h2>
       </div>
-      <p class="subtitle centered" id="ready-text">DigUp lives in the tray, which shows how indexing is going. Files are
-        searchable by name at once, and by what's in them as they're indexed.</p>
+      <div class="progress-card" id="progress">
+        <div class="progress-line">
+          <span class="progress-what" id="progress-what"></span>
+          <span class="progress-left" id="progress-left"></span>
+        </div>
+        <div class="bar" id="bar"><div class="fill" id="bar-fill"></div></div>
+        <p class="progress-note" id="progress-note"></p>
+      </div>
+      <p class="subtitle centered" id="ready-text">DigUp lives in the tray, which shows how indexing is going.
+        Closing this window doesn't stop it.</p>
     </section>
   </main>
 
   <footer>
     <span class="model" id="model"></span>
+    <span class="summary" id="summary"></span>
     <span class="buttons">
       <button id="back" hidden>Back</button>
       <button class="primary" id="next">Continue</button>

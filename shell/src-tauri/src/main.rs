@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use settings::Settings;
 use status::Status;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -72,6 +72,11 @@ struct Shell {
     debug_query_sent: AtomicBool,
     /// Quit was chosen: no helper starts again (an index event arriving meanwhile would start the search service).
     quitting: AtomicBool,
+    /// The speed check is running (`measure_then_index`): indexing waits for it, so that the two don't share the
+    /// processor.
+    measuring: AtomicBool,
+    /// Folder estimates running (setup's list): the speed check waits for them, for the same reason.
+    estimating: AtomicUsize,
     logs: PathBuf,
 }
 
@@ -188,7 +193,8 @@ async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<
     let helper = shell.options.helper.clone();
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
     let index = shell.index_arguments();
-    tauri::async_runtime::spawn_blocking(move || {
+    shell.estimating.fetch_add(1, Ordering::SeqCst);
+    let answers = tauri::async_runtime::spawn_blocking(move || {
         let mut command = std::process::Command::new(&helper);
         command.arg("estimate").args(&folders).args(&index).arg("--json");
         #[cfg(windows)]
@@ -199,8 +205,9 @@ async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<
         let output = command.output().map_err(|error| format!("can't run {}: {error}", helper.display()))?;
         Ok(String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok()).collect())
     })
-    .await
-    .map_err(|error| error.to_string())?
+    .await;
+    shell.estimating.fetch_sub(1, Ordering::SeqCst);
+    answers.map_err(|error| error.to_string())?
 }
 
 /// What the setup window starts from: the folders it offers, the hotkey, the model, the folders already chosen.
@@ -221,9 +228,12 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
     json!({
         "offered": offered.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>(),
         "chosen": shell.folders(),
+        "skipped": shell.settings.lock().unwrap().skipped.clone(),
+        "setUp": shell.is_set_up(),
         "hotkey": shell.hotkey_text(),
         "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
         "model": shell.model_state.lock().unwrap().clone(),
+        "state": shell.snapshot(),
         "auto": shell.options.debug_setup,
     })
 }
@@ -239,13 +249,29 @@ async fn pick_folders(app: AppHandle) -> Vec<String> {
     picked.into_iter().filter_map(|folder| folder.into_path().ok()).map(|path| path.display().to_string()).collect()
 }
 
-/// Setup's last step: the folders are saved and indexing starts (once the model is in).
+/// Setup's folders, kept on leaving its folders step (or on Save, choosing folders later): indexing starts on them at
+/// once (once the model is in), while the rest of setup goes on, as on the Mac. `skipped`: folders inside them that
+/// aren't searched.
 #[tauri::command]
-fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<(), String> {
-    let first = !shell.is_set_up();
+fn apply_setup_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>)
+    -> Result<(), String> {
     {
         let mut settings = shell.settings.lock().unwrap();
         settings.folders = folders;
+        settings.skipped = skipped;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    apply_folders(&app);
+    Ok(())
+}
+
+/// Setup's last step, Done (indexing has started already): the first time, DigUp opens at login from now on, gets its
+/// shortcut on GNOME, and its window comes up.
+#[tauri::command]
+fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
+    let first = !shell.is_set_up();
+    if first {
+        let mut settings = shell.settings.lock().unwrap();
         settings.set_up = true;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
@@ -263,7 +289,6 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
             set_status(&app, &format!("The shortcut couldn't be added to GNOME's settings: {error}"));
         }
     }
-    apply_folders(&app);
     if let Some(window) = app.get_webview_window("setup") {
         let _ = window.close();
     }
@@ -455,7 +480,7 @@ fn main() {
         )
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
-            ask, estimate, setup_info, pick_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
+            ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window
         ])
@@ -542,6 +567,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         window_search: Mutex::new(None),
         debug_query_sent: AtomicBool::new(false),
         quitting: AtomicBool::new(false),
+        measuring: AtomicBool::new(false),
+        estimating: AtomicUsize::new(0),
         logs,
     });
     app.manage(shell.clone());
@@ -587,9 +614,12 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     if let Err(error) = shell.model.run(&shell.launch(download, "model.log")) {
         model_event(&handle, json!({"event": "error", "message": error}));
     }
-    if shell.is_set_up() {
+    if !shell.folders().is_empty() {
         watch_folders(&handle);
     } else {
+        changed(&handle);
+    }
+    if !shell.is_set_up() {
         show_setup(&handle)?;
     }
     let options = &shell.options;
@@ -648,10 +678,12 @@ fn watch_folders(app: &AppHandle) {
     run_index(app);
 }
 
-/// Has the index helper sync and index, once there's a model and a folder.
+/// Has the index helper sync and index, once there's a model and a folder (from setup's folders step on), and the
+/// speed check isn't running.
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
-    if !shell.is_set_up() || shell.folders().is_empty() || !shell.model_ready() || shell.quitting.load(Ordering::SeqCst) {
+    if shell.folders().is_empty() || !shell.model_ready() || shell.measuring.load(Ordering::SeqCst)
+        || shell.quitting.load(Ordering::SeqCst) {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
@@ -1062,8 +1094,58 @@ fn model_event(app: &AppHandle, event: Value) {
     let _ = app.emit("model", state);
     changed(app);
     if ready {
-        run_index(app);
+        measure_then_index(app);
     }
+}
+
+/// Once the model is in: this computer's speed with the model (`digup speed --model --if-needed`: once, kept beside
+/// the index; estimates on Linux and Windows go by it until indexing has measured enough itself), then indexing.
+fn measure_then_index(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    // A Mac times itself without the model (Metal, and Vision for the OCR that indexing runs there).
+    if cfg!(target_os = "macos") {
+        return run_index(app);
+    }
+    if shell.measuring.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    shell.status.lock().unwrap().measuring = true;
+    changed(app);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // Setup's folder estimates (walking folders, reading PDFs and media) would slow the check, and DigUp would then
+        // take this computer for slower than it is: they go first (two minutes at most).
+        let waiting = Instant::now();
+        while shell.estimating.load(Ordering::SeqCst) > 0 && waiting.elapsed() < Duration::from_secs(120) {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let mut command = std::process::Command::new(&shell.options.helper);
+        command.args(["speed", "--model", "--if-needed", "--json"]).args(shell.index_arguments());
+        if let Some(models) = &shell.options.models {
+            command.env("DIGUP_MODELS", models);
+        }
+        if let Ok(log) = std::fs::OpenOptions::new().create(true).append(true).open(shell.logs.join("speed.log")) {
+            command.stderr(log);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let reply = match command.output() {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok())
+                .last().unwrap_or_else(|| json!({"event": "speed", "error": format!("exit {}", output.status)})),
+            Err(error) => json!({"event": "speed", "error": error.to_string()}),
+        };
+        if cfg!(debug_assertions) {
+            println!("speed: {reply}");
+        }
+        shell.measuring.store(false, Ordering::SeqCst);
+        shell.status.lock().unwrap().measuring = false;
+        let _ = app.emit("speed", reply);
+        changed(&app);
+        run_index(&app);
+    });
 }
 
 /// Has the search service read the index again: at once when indexing settles, else at most every three seconds.

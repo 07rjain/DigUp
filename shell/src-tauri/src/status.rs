@@ -30,6 +30,8 @@ pub struct Status {
     /// Chosen folders that aren't there now (an unplugged drive), and ones DigUp can't read: skipped, files kept.
     pub missing: Vec<String>,
     pub unreadable: Vec<String>,
+    /// The speed check before the first index is running.
+    pub measuring: bool,
 }
 
 impl Status {
@@ -83,6 +85,9 @@ impl Status {
         // Nothing is read before the model is in (file names are searchable once indexing starts).
         if let Some(line) = download_line(model) {
             return line;
+        }
+        if self.measuring {
+            return "Checking this computer's speed…".into();
         }
         match self.activity {
             Activity::Starting => "Starting…".into(),
@@ -145,6 +150,14 @@ impl Status {
             "searchable": self.searchable,
             "pending": self.pending,
             "unfinished": self.unfinished,
+            "measuring": self.measuring,
+            "activity": match self.activity {
+                Activity::Starting => "starting",
+                Activity::Idle => "idle",
+                Activity::Indexing { .. } => "indexing",
+                Activity::Finishing { .. } => "finishing",
+                Activity::Failed(_) => "failed",
+            },
             "model": model,
         })
     }

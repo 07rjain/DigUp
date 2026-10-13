@@ -69,15 +69,48 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: 
 
 .folders { display: flex; flex-direction: column; gap: 6px; }
 
-.folder {
-  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
-  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+/* A folder: its checkbox (mixed when only some of it is searched), what's in it, how long its first pass takes, and its
+   subfolders one level down when opened. */
+.folder-box { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.folder-box.off { background: transparent; }
+.folder { display: flex; align-items: center; gap: 10px; padding: 9px 12px 9px 6px; }
+.disclosure {
+  width: 18px; height: 26px; flex: none; padding: 0; border: 0; background: none; color: var(--secondary);
+  display: grid; place-items: center;
 }
-.folder input { width: 16px; height: 16px; accent-color: var(--moss); flex: none; }
+.disclosure svg { width: 10px; height: 10px; transition: transform 0.12s; }
+.disclosure.open svg { transform: rotate(90deg); }
+.disclosure[disabled] { visibility: hidden; }
+.folder input, .subfolder input { width: 16px; height: 16px; accent-color: var(--moss); flex: none; margin: 0; }
 .folder .text { min-width: 0; flex: 1; }
 .folder .name { font-size: 13px; font-weight: 600; }
-.folder .path { font-size: 11px; color: var(--secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.folder .counts { font-size: 11px; color: var(--secondary); text-align: right; flex: none; max-width: 52%; }
+.folder .path, .folder .counts { font-size: 11px; color: var(--secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder .counts.problem { color: var(--ember); }
+.time { flex: none; text-align: right; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.time small { display: block; font-size: 10px; font-weight: 400; color: var(--tertiary); }
+.off .time, .subfolder.off .time, .time.quiet { color: var(--tertiary); }
+.subfolders { border-top: 1px solid var(--line); padding: 4px 0 6px; }
+.subfolder { display: flex; align-items: center; gap: 8px; padding: 4px 12px 4px 34px; }
+.subfolder .name { font-size: 12px; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subfolder .counts { font-size: 11px; color: var(--secondary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subfolder.off .name, .subfolder.off .counts { opacity: 0.6; }
+.subfolder .time { font-size: 11px; color: var(--secondary); }
+.more { font: inherit; font-size: 11px; color: var(--ember); background: none; border: 0; padding: 4px 0 2px 58px; }
+
+/* Setup's last step: the model's download, then indexing, as it goes. */
+.progress-card {
+  max-width: 470px; margin: 26px auto 0; padding: 16px 18px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+}
+.progress-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; }
+.progress-what { font-weight: 600; }
+.progress-left { color: var(--secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar { position: relative; height: 6px; margin-top: 10px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 3px; background: var(--moss); transition: width 0.3s; }
+.bar.busy .fill { width: 30%; animation: busy 1.3s ease-in-out infinite; }
+.bar.done .fill { width: 100%; }
+@keyframes busy { from { left: -30%; } to { left: 100%; } }
+.progress-note { font-size: 12px; color: var(--secondary); line-height: 1.45; margin: 10px 0 0; }
 
 button {
   font: inherit; font-size: 13px; color: var(--text); background: var(--card); border: 1px solid var(--line);
@@ -109,5 +142,6 @@ footer {
   flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 20px; border-top: 1px solid var(--line);
 }
-.model { font-size: 11px; color: var(--secondary); }
+.model { font-size: 11px; color: var(--secondary); white-space: nowrap; }
+.summary { flex: 1; text-align: right; font-size: 12px; color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .buttons { display: flex; gap: 8px; }
