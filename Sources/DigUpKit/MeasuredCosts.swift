@@ -60,19 +60,51 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
         tallies[name] = tally
     }
 
-    /// The costs to estimate with: measured ones where there are enough, else the fixed ones as fast as `speed` says.
+    /// `Costs`' fields by the names tallies go by.
+    static var fields: [(name: String, cost: WritableKeyPath<Costs, Double>)] {
+        [("image", \.image), ("screenshot", \.screenshot), ("pdfPage", \.pdfPage), ("docChunk", \.docChunk),
+         ("audioSecond", \.audioSecond), ("videoSecond", \.videoSecond), ("codeStretch", \.codeStretch)]
+    }
+
+    /// The costs to estimate with: measured ones where there are enough; else the fixed ones as fast as `speed` says, at
+    /// the `pace` indexing has kept here on the kinds it has measured.
     public var costs: Costs {
+        var costs = expected
+        let pace = min(50, max(0.02, self.pace ?? 1))
+        for field in Self.fields {
+            if let tally = tallies[field.name], tally.units >= Self.enough[field.name] ?? .infinity {
+                costs[keyPath: field.cost] = tally.seconds / tally.units
+            } else {
+                costs[keyPath: field.cost] *= pace
+            }
+        }
+        return costs
+    }
+
+    /// How indexing here compares with what was expected of it: its measured cost over the expected one, over the kinds
+    /// with enough measured (weighted by their seconds). Nil before any kind has enough. A speed check timed at a bad
+    /// moment took one PC (an RTX 4050 laptop) for 30 times slower than its indexing went: this puts its other kinds
+    /// right too, as indexing measures some of them.
+    public var pace: Double? {
+        let expected = expected
+        var sum = 0.0, weights = 0.0
+        for field in Self.fields {
+            guard let tally = tallies[field.name], tally.units >= Self.enough[field.name] ?? .infinity,
+                  tally.seconds > 0, expected[keyPath: field.cost] > 0 else { continue }
+            sum += tally.seconds * log(tally.seconds / tally.units / expected[keyPath: field.cost])
+            weights += tally.seconds
+        }
+        return weights > 0 ? exp(sum / weights) : nil
+    }
+
+    /// The fixed costs as fast as `speed` says.
+    var expected: Costs {
         var costs = Costs()
         if let kinds = speed?.kinds {
             // A PC's processor can be fifty times slower than the M4 Pro's GPU.
-            func scaled(_ name: String, _ cost: Double) -> Double { cost * min(500, max(0.1, kinds[name] ?? 1)) }
-            costs.image = scaled("image", costs.image)
-            costs.screenshot = scaled("screenshot", costs.screenshot)
-            costs.pdfPage = scaled("pdfPage", costs.pdfPage)
-            costs.docChunk = scaled("docChunk", costs.docChunk)
-            costs.audioSecond = scaled("audioSecond", costs.audioSecond)
-            costs.videoSecond = scaled("videoSecond", costs.videoSecond)
-            costs.codeStretch = scaled("codeStretch", costs.codeStretch)
+            for field in Self.fields {
+                costs[keyPath: field.cost] *= min(500, max(0.1, kinds[field.name] ?? 1))
+            }
         } else if let speed {
             let embedding = min(10, max(0.25, speed.embedding)), ocr = min(10, max(0.25, speed.ocr))
             costs.image *= embedding
@@ -83,17 +115,6 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
             costs.videoSecond *= embedding
             costs.codeStretch *= embedding
         }
-        func measured(_ name: String) -> Double? {
-            guard let tally = tallies[name], tally.units >= Self.enough[name] ?? .infinity else { return nil }
-            return tally.seconds / tally.units
-        }
-        costs.image = measured("image") ?? costs.image
-        costs.screenshot = measured("screenshot") ?? costs.screenshot
-        costs.pdfPage = measured("pdfPage") ?? costs.pdfPage
-        costs.docChunk = measured("docChunk") ?? costs.docChunk
-        costs.audioSecond = measured("audioSecond") ?? costs.audioSecond
-        costs.videoSecond = measured("videoSecond") ?? costs.videoSecond
-        costs.codeStretch = measured("codeStretch") ?? costs.codeStretch
         return costs
     }
 
