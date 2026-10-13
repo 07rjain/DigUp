@@ -23,7 +23,8 @@ import Foundation
 ///   {"op":"summaries","code":bool}            → {"roots":[{"path","missing","unreadable","files","indexed","pending",
 ///                                               "failed","skipped","unfinished","kinds":{kind: n}}]}: what's indexed
 ///                                               under each chosen folder (each code folder, with `code`)
-///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}
+///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}: each
+///                                               optional; no code folders closes the code index
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
 ///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,"files":n,
 ///                                               "searchable":n,"pending":n,"unfinished":n,…}
@@ -71,9 +72,10 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         try openCode()
     }
 
+    /// The code index is open while there are code folders: without any, a shell can delete it (Windows won't delete an
+    /// open file).
     private func openCode() throws {
-        guard !codeRoots.isEmpty || FileManager.default.fileExists(atPath: directory.appendingPathComponent(IndexStore.codeFile).path)
-        else { return }
+        guard !codeRoots.isEmpty else { return }
         let store = try IndexStore(directory: directory, file: IndexStore.codeFile)
         codeStore = store
         codeSearcher = try Searcher(store: store, loadVectors: false)
@@ -190,7 +192,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             if let value = request["types"] as? [String] { types = IndexOptions.extensions(value.joined(separator: ",")) }
             if let value = request["code_roots"] as? [String] { codeRoots = value.map { Arguments.folderURL($0).path } }
             if let value = request["code_skipped"] as? [String] { codeSkipped = value.map { Arguments.folderURL($0).path } }
-            if codeSearcher == nil { try openCode() }
+            if codeRoots.isEmpty {
+                codeSearcher = nil
+                codeStore = nil
+            } else if codeSearcher == nil {
+                try openCode()
+            }
             return ["ok": true]
         case "prewarm":
             lastQuery = Date()
