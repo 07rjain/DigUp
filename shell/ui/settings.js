@@ -55,6 +55,22 @@ function renderGeneral() {
   $("recording").hidden = !recording;
 }
 
+/// A switch: the shell does it, or the box goes back and says why.
+function wire(box, command) {
+  box.addEventListener("change", async () => {
+    $("problem").hidden = true;
+    try {
+      await invoke(command, { on: box.checked });
+    } catch (error) {
+      box.checked = !box.checked;
+      fail(error);
+    }
+  });
+}
+
+wire($("login"), "set_open_at_login");
+wire($("center"), "set_center_panel");
+
 // MARK: The shortcut (where DigUp grabs it itself: Windows, X11; shortcut.js)
 
 let recording = false;
