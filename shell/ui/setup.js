@@ -632,7 +632,20 @@ function showShortcut(shortcut) {
   $("shortcut-note").textContent = note || "";
   $("shortcut-command").hidden = shortcut?.method !== "by_hand";
   $("shortcut-command").textContent = shortcut?.command || "";
+  $("change-shortcut").hidden = shortcut?.method !== "grab";
 }
+
+// Where DigUp grabs the shortcut itself (Windows, X11), it can be changed here (shortcut.js).
+$("change-shortcut").addEventListener("click", () => {
+  $("change-shortcut").hidden = true;
+  $("recording").hidden = false;
+  recordShortcut((text) => { $("recording").textContent = text; }, (shown, problem) => {
+    if (shown) showKeys(shown);
+    $("recording").textContent = problem || "";
+    $("recording").hidden = !problem;
+    $("change-shortcut").hidden = false;
+  });
+});
 
 function element(tag, className, text) {
   const node = document.createElement(tag);

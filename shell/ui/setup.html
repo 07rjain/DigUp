@@ -48,6 +48,8 @@
       <h2>Search from anywhere</h2>
       <p class="subtitle">Press the shortcut in any app to open the search panel, and describe what you remember.</p>
       <div class="keys" id="keys"></div>
+      <button class="link" id="change-shortcut" hidden>Change Shortcut…</button>
+      <p class="note" id="recording" hidden></p>
       <p class="shortcut-note" id="shortcut-note" hidden></p>
       <code class="command" id="shortcut-command" hidden></code>
       <h3>In the search panel</h3>
@@ -55,6 +57,7 @@
         <dt>↩</dt><dd>opens the file (at the page or moment, where it can)</dd>
         <dt id="reveal-key">Ctrl+↩</dt><dd id="reveal-text">shows it in its folder</dd>
         <dt>↑ ↓</dt><dd>move between results</dd>
+        <dt>Space</dt><dd>shows the one you moved to big</dd>
         <dt>Esc</dt><dd>closes the panel</dd>
       </dl>
     </section>
@@ -85,6 +88,7 @@
       <button class="primary" id="next">Continue</button>
     </span>
   </footer>
+  <script src="shortcut.js"></script>
   <script src="setup.js"></script>
 </body>
 </html>
