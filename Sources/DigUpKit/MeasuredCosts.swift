@@ -136,7 +136,7 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? encoder.encode(self).write(to: Self.file(in: folder), options: .atomic)
+        try? encoder.encode(self).writeReplacing(Self.file(in: folder))
     }
 
     private static let lock = NSLock()
