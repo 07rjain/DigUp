@@ -107,7 +107,7 @@ fn rounded_rect(x: f64, y: f64, left: f64, top: f64, right: f64, bottom: f64, ra
     (x - cx).powi(2) + (y - cy).powi(2) <= radius * radius
 }
 
-/// The mark's color: black on a Mac (a template) and on a light Windows taskbar, white elsewhere.
+/// The mark's color: black on a Mac (a template), on a light Windows taskbar and on a light KDE panel, white elsewhere.
 fn color() -> u8 {
     if cfg!(target_os = "macos") {
         return 0;
@@ -116,7 +116,63 @@ fn color() -> u8 {
     if light_taskbar() {
         return 0;
     }
+    #[cfg(target_os = "linux")]
+    if light_kde_panel() {
+        return 0;
+    }
     255
+}
+
+/// Linux: KDE Plasma's panel is light (its default, Breeze with the Breeze Light colors). GNOME's top bar is dark whatever
+/// the theme, and other desktops' panels are taken for dark. Looked at once.
+#[cfg(target_os = "linux")]
+fn light_kde_panel() -> bool {
+    static LIGHT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LIGHT.get_or_init(|| {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        let config = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()).map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")));
+        config.is_some_and(|config| kde_panel_is_light(&desktop, &config))
+    })
+}
+
+/// The Plasma style decides (plasmarc's [Theme] name); its default follows the color scheme, whose windows' background
+/// (kdeglobals' [Colors:Window] BackgroundNormal) says light or dark, and with none set it's Breeze Light.
+#[cfg(any(target_os = "linux", test))]
+fn kde_panel_is_light(desktop: &str, config: &std::path::Path) -> bool {
+    if !desktop.split(':').any(|name| name.eq_ignore_ascii_case("KDE")) {
+        return false;
+    }
+    let style = ini_value(&config.join("plasmarc"), "Theme", "name").unwrap_or_else(|| "default".into());
+    match style.as_str() {
+        "breeze-dark" | "oxygen" => false,
+        "breeze-light" | "air" => true,
+        _ => ini_value(&config.join("kdeglobals"), "Colors:Window", "BackgroundNormal")
+            .and_then(|rgb| {
+                let parts: Vec<f64> = rgb.split(',').filter_map(|part| part.trim().parse().ok()).collect();
+                (parts.len() >= 3).then(|| 0.299 * parts[0] + 0.587 * parts[1] + 0.114 * parts[2])
+            })
+            .map_or(true, |brightness| brightness > 128.0),
+    }
+}
+
+/// A value in an INI-style file (KDE's config files): `key=value` under `[group]`.
+#[cfg(any(target_os = "linux", test))]
+fn ini_value(file: &std::path::Path, group: &str, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let mut inside = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line == format!("[{group}]");
+        } else if inside {
+            if let Some((name, value)) = line.split_once('=') {
+                if name.trim() == key {
+                    return Some(value.trim().to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Windows: the taskbar is light (Settings → Personalization → Colors, "Choose your default Windows mode").
@@ -139,6 +195,20 @@ fn light_taskbar() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kde_panels_light_or_dark() {
+        let config = std::env::temp_dir().join(format!("digup-kde-{}", std::process::id()));
+        std::fs::create_dir_all(&config).unwrap();
+        // No style or colors set: Breeze Light. GNOME: dark whatever the files say.
+        assert!(kde_panel_is_light("KDE", &config));
+        assert!(!kde_panel_is_light("ubuntu:GNOME", &config));
+        std::fs::write(config.join("kdeglobals"), "[General]\nColorScheme=BreezeDark\n\n[Colors:Window]\nBackgroundNormal=32,35,38\n").unwrap();
+        assert!(!kde_panel_is_light("KDE", &config));
+        std::fs::write(config.join("plasmarc"), "[Theme]\nname=breeze-light\n").unwrap();
+        assert!(kde_panel_is_light("KDE", &config));
+        std::fs::remove_dir_all(config).unwrap();
+    }
 
     #[test]
     fn draws_each_look() {
