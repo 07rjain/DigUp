@@ -86,21 +86,26 @@ impl Editor {
 
     /// Opens `path` at `line` with `program` (this editor's), without waiting for it.
     pub fn open(&self, program: &Path, path: &str, line: u32) -> std::io::Result<()> {
-        let mut command = Command::new(program);
-        command.args(self.arguments(path, line)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: a .cmd would otherwise flash a console
-        }
-        let mut child = command.spawn()?;
-        // The editor's command line hands the file to the editor and ends; an editor that is its own program (gedit)
-        // stays: either way it's reaped when it ends.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-        Ok(())
+        start(program, &self.arguments(path, line))
     }
+}
+
+/// Starts an app with `args`, without waiting for it.
+pub fn start(program: &Path, args: &[String]) -> std::io::Result<()> {
+    let mut command = Command::new(program);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: a .cmd would otherwise flash a console
+    }
+    let mut child = command.spawn()?;
+    // An editor's command line hands the file over and ends; an app that is its own program (gedit, a PDF viewer) stays:
+    // either way it's reaped when it ends.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// The editors installed, in the list's order.
@@ -129,7 +134,7 @@ fn chosen_in(choice: &str, folders: &[PathBuf]) -> Option<(&'static Editor, Path
 
 /// Where programs are: PATH, and on Linux the folders a desktop session's PATH may lack (~/.local/bin, Snap's,
 /// Flatpak's).
-fn program_folders() -> Vec<PathBuf> {
+pub fn program_folders() -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
     if cfg!(target_os = "linux") {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -143,7 +148,7 @@ fn program_folders() -> Vec<PathBuf> {
 }
 
 /// `name` as a program in one of `folders` (with Windows' .exe, .cmd and .bat).
-fn find(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
+pub fn find(name: &str, folders: &[PathBuf]) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
         ["exe", "cmd", "bat"].iter().map(|extension| format!("{name}.{extension}")).collect()
     } else {

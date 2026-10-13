@@ -371,9 +371,7 @@ function columns() {
 }
 
 function open(hit) {
-  const opening = hit.kind === "code" ? invoke("open_code", { path: hit.path, line: codeLine(hit) })
-    : invoke("open_path", { path: hit.path });
-  opening.catch(failed);
+  openResult(hit).catch(failed);
 }
 
 function reveal(hit) {

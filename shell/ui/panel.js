@@ -134,10 +134,7 @@ function toggleWeaker() {
 
 function openSelected() {
   const hit = selectedHit();
-  if (!hit) return;
-  const opening = hit.kind === "code" ? invoke("open_code", { path: hit.path, line: codeLine(hit) })
-    : invoke("open_path", { path: hit.path });
-  opening.catch(failed);
+  if (hit) openResult(hit).catch(failed);
 }
 
 function revealSelected() {

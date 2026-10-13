@@ -27,7 +27,8 @@ libc = "0.2"
 # hours (already in Tauri's build on Windows).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects",
-                                              "Win32_System_Registry", "Win32_System_SystemInformation"] }
+                                              "Win32_System_Registry", "Win32_System_SystemInformation",
+                                              "Win32_UI_Shell"] }
 
 # GNOME's shortcut settings, `--toggle` handed to the running DigUp, and the panel's window on Wayland (all already in
 # Tauri's build on Linux).

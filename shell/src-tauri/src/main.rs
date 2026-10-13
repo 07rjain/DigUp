@@ -10,6 +10,7 @@ mod editors;
 mod helper;
 mod hotkey;
 mod hours;
+mod moments;
 mod options;
 mod settings;
 mod status;
@@ -347,10 +348,14 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), Stri
     Ok(())
 }
 
-/// Opens a result in its default app.
+/// Opens a result in its default app: at `page` (a PDF's, from 1) or at `seconds` (a recording's or video's) when that
+/// app can be told where.
 #[tauri::command]
-fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+fn open_path(app: AppHandle, path: String, page: Option<u32>, seconds: Option<f64>) -> Result<(), String> {
     hide_panel(app.clone());
+    if (page.is_some() || seconds.is_some()) && moments::open_at(&path, page, seconds) {
+        return Ok(());
+    }
     app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
 }
 

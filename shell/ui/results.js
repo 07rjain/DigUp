@@ -40,6 +40,26 @@ function placeOf(hit) {
   }
 }
 
+/// Opens a result: code in the editor at its line, a PDF at its page and a recording or video at its moment in their
+/// default apps (where those apps can be told), anything else plainly.
+function openResult(hit) {
+  if (hit.kind === "code") return invoke("open_code", { path: hit.path, line: codeLine(hit) });
+  return invoke("open_path", { path: hit.path, ...placeToOpen(hit) });
+}
+
+/// Where a result opens: a PDF's page past the first, a recording's or video's moment past its first second (the Mac
+/// app's Moments).
+function placeToOpen(hit) {
+  if (hit.kind === "pdf" && (hit.segment === "page" || hit.segment === "page_image") && hit.loc > 1) {
+    return { page: Math.trunc(hit.loc) };
+  }
+  if ((hit.kind === "video" || hit.kind === "audio") && (hit.segment === "frame" || hit.segment === "audio")
+      && hit.loc >= 1) {
+    return { seconds: hit.loc };
+  }
+  return {};
+}
+
 /// The line a code result opens at in an editor: where its stretch of lines is about (the definition a name points
 /// to), else its first line; a notebook at its top (the Mac app's Moments).
 function codeLine(hit) {
