@@ -25,7 +25,8 @@ import Foundation
 ///                                               under each chosen folder (each code folder, with `code`)
 ///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
-///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,…}
+///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,"files":n,
+///                                               "searchable":n,"pending":n,"unfinished":n,…}
 ///   {"op":"quit"}                             → {"ok":true}, then exit
 /// The encoder exits after `--encoder-idle` seconds without a query and the vectors are released (as in the app);
 /// keyword search keeps working and the next query brings both back.
@@ -197,9 +198,22 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             if !searcher.vectorsLoaded { try searcher.reload() }
             return ["ok": true, "encoder": encoderState, "vectors": searcher.vectorCount]
         case "status":
-            return ["encoder": encoderState, "vectors": searcher.vectorsLoaded ? searcher.vectorCount : 0,
-                    "code_vectors": codeSearcher?.vectorsLoaded == true ? codeSearcher!.vectorCount : 0,
-                    "index": store.file.path]
+            var reply: [String: Any] = ["encoder": encoderState, "vectors": searcher.vectorsLoaded ? searcher.vectorCount : 0,
+                                        "code_vectors": codeSearcher?.vectorsLoaded == true ? codeSearcher!.vectorCount : 0,
+                                        "index": store.file.path]
+            // What's in the index, as the index helper counts it: a shell knows it before any indexing runs.
+            if let counts = try? store.counts() {
+                var files = 0, searchable = 0, pending = 0
+                for states in counts.byKindAndState.values {
+                    for (state, count) in states {
+                        files += count
+                        if state == "done" || state == "partial" { searchable += count }
+                        if state == "pending" { pending += count }
+                    }
+                }
+                reply.merge(["files": files, "searchable": searchable, "pending": pending, "unfinished": counts.unfinished]) { $1 }
+            }
+            return reply
         default:
             throw CLIError("unknown op \(op)")
         }
