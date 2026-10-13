@@ -1,13 +1,15 @@
-// DigUp's shell for Windows and Linux (tried out on the Mac first): the tray icon, the hotkey, the search panel and the
-// setup window. The work is DigUp's helper, `digup`, run as processes speaking JSON lines (helper.rs): `search-service`
-// answers the panel, `index-service` keeps the index current, `download-model` fetches the model, `estimate` sizes up
-// folders. The Mac app (Sources/DigUpApp) is the reference for behavior.
+// DigUp's shell for Windows and Linux (tried out on the Mac first): the tray icon, the hotkey, the search panel, the
+// window, and the setup and settings windows. The work is DigUp's helper, `digup`, run as processes speaking JSON lines
+// (helper.rs): `search-service` answers the panel and the window, `index-service` keeps the index current,
+// `download-model` fetches the model, `estimate` sizes up folders. The Mac app (Sources/DigUpApp) is the reference for
+// behavior.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod helper;
 mod hotkey;
 mod options;
 mod settings;
+mod status;
 mod watcher;
 mod wayland;
 
@@ -16,6 +18,7 @@ use hotkey::Method;
 use options::{Options, DEFAULT_HOTKEY};
 use serde_json::{json, Value};
 use settings::Settings;
+use status::Status;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,6 +37,8 @@ const PANEL_WIDTH: f64 = 780.0;
 const PANEL: &str = "panel";
 const CENTERED_PANEL: &str = "panel-centered";
 const FIELD_HEIGHT: f64 = 56.0;
+/// The window's label.
+const WINDOW: &str = "main";
 
 /// What the commands and events share.
 struct Shell {
@@ -52,15 +57,21 @@ struct Shell {
     model: ModelDownload,
     /// The model for the setup window and the tray: {"state": "checking|downloading|waiting|ready|failed", …}.
     model_state: Mutex<Value>,
+    /// What indexing is doing, from the index helper's events (status.rs).
+    status: Mutex<Status>,
     watcher: Mutex<Option<FolderWatcher>>,
     /// The tray menu's first line: what's going on.
-    status: Mutex<Option<MenuItem<Wry>>>,
+    status_item: Mutex<Option<MenuItem<Wry>>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
     watchdog_stops: Mutex<Vec<Instant>>,
+    /// A search the panel hands the window (its query, and the kind of results to show): taken when the window opens.
+    window_search: Mutex<Option<(String, Option<String>)>>,
     /// Debug runs with setup: the panel's query waits until the first index is in.
     debug_query_sent: AtomicBool,
+    /// Quit was chosen: no helper starts again (an index event arriving meanwhile would start the search service).
+    quitting: AtomicBool,
     logs: PathBuf,
 }
 
@@ -145,15 +156,21 @@ impl Shell {
     fn opens_at_login(&self) -> bool {
         !cfg!(target_os = "macos") && self.options.settings.is_none()
     }
+
+    /// What the pages show about indexing and the model (status.rs).
+    fn snapshot(&self) -> Value {
+        let model = self.model_state.lock().unwrap().clone();
+        self.status.lock().unwrap().snapshot(!self.folders().is_empty(), &model)
+    }
 }
 
 // MARK: Commands
 
-/// The panel's questions for `search-service`.
+/// The panel's and the window's questions for `search-service`.
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status"].contains(&op) {
+    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries"].contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
     }
     shell.search.ask(request).await
@@ -245,6 +262,12 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
     if let Some(window) = app.get_webview_window("setup") {
         let _ = window.close();
     }
+    // The first time, the window comes up: searching starts there while indexing goes on.
+    if first && !shell.options.debug_setup {
+        later(&app, |app| {
+            let _ = show_window(app);
+        });
+    }
     Ok(())
 }
 
@@ -307,6 +330,75 @@ fn debug_report(app: AppHandle, shell: State<'_, Arc<Shell>>, report: Value) {
     }
 }
 
+// MARK: The window's commands
+
+/// What the window shows besides results: the folders searched, the shortcut (none where the person has to add one),
+/// indexing, and a search the panel handed over (taken once).
+#[tauri::command]
+fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
+    let search = shell.window_search.lock().unwrap().take();
+    json!({
+        "folders": shell.folders(),
+        "hotkey": (shell.shortcut != Method::ByHand).then(|| shell.hotkey_text()),
+        "state": shell.snapshot(),
+        "search": search.map(|(query, kind)| json!({"query": query, "kind": kind})),
+        "debugQuery": shell.options.debug_window,
+    })
+}
+
+/// Indexing and the model, as the pages show them (also sent as "state" events when they change).
+#[tauri::command]
+fn app_state(shell: State<'_, Arc<Shell>>) -> Value {
+    shell.snapshot()
+}
+
+/// The panel's search in the window, for a bigger look (Ctrl+O, "Show all…"); `kind` limits it to one group.
+#[tauri::command]
+fn open_window(app: AppHandle, shell: State<'_, Arc<Shell>>, query: String, kind: Option<String>) {
+    hide_panel(app.clone());
+    *shell.window_search.lock().unwrap() = Some((query, kind));
+    later(&app, |app| {
+        let _ = show_window(app);
+    });
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    later(&app, |app| {
+        let _ = show_settings(app);
+    });
+}
+
+#[tauri::command]
+fn choose_folders(app: AppHandle) {
+    later(&app, |app| {
+        let _ = show_setup(app);
+    });
+}
+
+#[tauri::command]
+fn index_now(app: AppHandle) {
+    run_index(&app);
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    quit(&app);
+}
+
+/// Ctrl+W in a window.
+#[tauri::command]
+fn close_window(window: tauri::WebviewWindow) {
+    let _ = window.close();
+}
+
+/// Runs on the main thread once the command at hand has returned: a window made inside a command's handler can
+/// deadlock on Windows.
+fn later(app: &AppHandle, work: impl FnOnce(&AppHandle) + Send + 'static) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || work(&handle));
+}
+
 fn main() {
     let options = match Options::from_args() {
         Ok(options) => options,
@@ -321,17 +413,21 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
-        // A second launch shows the panel, or toggles it for a desktop shortcut's `--toggle`.
+        // A second launch (DigUp opened again from the app grid or the Start menu) shows the window, as on the Mac; a
+        // desktop shortcut's `--toggle` shows or hides the panel.
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|arg| arg == "--toggle") {
                 toggle_panel(app)
+            } else if !app.state::<Arc<Shell>>().is_set_up() {
+                let _ = show_setup(app);
             } else {
-                show_panel(app)
+                let _ = show_window(app);
             }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        // The launch at login says so: DigUp then waits in the tray instead of showing its window.
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--at-login"])))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _, event| {
@@ -344,7 +440,8 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
-            panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report
+            panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
+            app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -356,7 +453,7 @@ fn main() {
                 hotkey::kde::stop();
             }
         }
-        // Closing the setup window isn't quitting: DigUp lives in the tray.
+        // Closing the last window isn't quitting: DigUp lives in the tray.
         tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         _ => {}
     });
@@ -422,10 +519,13 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         model,
         model_state: Mutex::new(json!({"state": "checking"})),
         watcher: Mutex::new(None),
-        status: Mutex::new(None),
+        status: Mutex::new(Status::default()),
+        status_item: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
+        window_search: Mutex::new(None),
         debug_query_sent: AtomicBool::new(false),
+        quitting: AtomicBool::new(false),
         logs,
     });
     app.manage(shell.clone());
@@ -476,9 +576,23 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         show_setup(&handle)?;
     }
-    // Started by the shortcut (DigUp wasn't running): the panel comes up as it would have.
-    if shell.options.debug_show || shell.options.toggle {
+    let options = &shell.options;
+    if options.toggle || options.debug_show && options.debug_window.is_none() {
+        // Started by the shortcut (DigUp wasn't running): the panel comes up as it would have.
         show_panel(&handle);
+    } else if options.debug_window.is_some() || shell.is_set_up() && !options.at_login && options.debug_query.is_none() {
+        // Opened by hand: the window, so opening DigUp never looks like nothing happened (at login it waits in the
+        // tray).
+        if let Err(error) = show_window(&handle) {
+            eprintln!("digup-shell: can't open the window: {error}");
+        }
+    }
+    // The entry that opens DigUp at login is written again: it follows DigUp if it moved, and older ones didn't say
+    // `--at-login`.
+    if shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false) {
+        if let Err(error) = app.autolaunch().enable() {
+            eprintln!("digup-shell: can't renew opening at login: {error}");
+        }
     }
     Ok(())
 }
@@ -505,8 +619,8 @@ fn apply_folders(app: &AppHandle) {
 fn watch_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let folders: Vec<PathBuf> = shell.folders().iter().map(PathBuf::from).collect();
+    changed(app);
     if folders.is_empty() {
-        set_status(app, "No folders chosen yet");
         return;
     }
     let changed = {
@@ -521,7 +635,7 @@ fn watch_folders(app: &AppHandle) {
 /// Has the index helper sync and index, once there's a model and a folder.
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
-    if !shell.is_set_up() || shell.folders().is_empty() || !shell.model_ready() {
+    if !shell.is_set_up() || shell.folders().is_empty() || !shell.model_ready() || shell.quitting.load(Ordering::SeqCst) {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
@@ -537,6 +651,7 @@ fn stop_helpers(app: &AppHandle) {
 }
 
 fn quit(app: &AppHandle) {
+    app.state::<Arc<Shell>>().quitting.store(true, Ordering::SeqCst);
     stop_helpers(app);
     app.exit(0);
 }
@@ -632,6 +747,44 @@ fn toggle_panel(app: &AppHandle) {
         Some(panel) if panel.is_visible().unwrap_or(false) => hide_panel(app.clone()),
         _ => show_panel(app),
     }
+}
+
+/// The window: searches bigger than the panel (kind filters, a grid of pictures, the preview beside it), the home
+/// DigUp opens to by hand, and its menu (Choose Folders, Index Now, Settings, Quit) where a desktop has no tray. It's
+/// made when it opens and gone when it closes, so a closed window costs nothing. A search the panel hands over is in
+/// `window_search`: a new window takes it as it loads, an open one is told.
+fn show_window(app: &AppHandle) -> tauri::Result<()> {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    if let Some(window) = app.get_webview_window(WINDOW) {
+        if let Some((query, kind)) = shell.window_search.lock().unwrap().take() {
+            let _ = window.emit("window-search", json!({"query": query, "kind": kind}));
+        }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    // Debug runs look at it hidden: a window on screen takes the keyboard.
+    let hidden = shell.options.debug_window.is_some() && !shell.options.debug_show;
+    let (width, height) = window_size(app);
+    WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("window.html".into()))
+        .title("DigUp")
+        .inner_size(width, height)
+        .min_inner_size(820.0, 520.0)
+        .center()
+        .visible(!hidden)
+        .build()?;
+    Ok(())
+}
+
+/// The window's size: 1040 × 700, or less on a small screen (a laptop's 1366 × 768 at 125% has 1093 × 614 to show
+/// it in), but never under its least, 820 × 520.
+fn window_size(app: &AppHandle) -> (f64, f64) {
+    let screen = app.cursor_position().ok().and_then(|pointer| app.monitor_from_point(pointer.x, pointer.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(screen) = screen else { return (1040.0, 700.0) };
+    let area = screen.work_area().size.to_logical::<f64>(screen.scale_factor());
+    ((area.width * 0.9).clamp(820.0, 1040.0), (area.height * 0.9).clamp(520.0, 700.0))
 }
 
 /// The setup window (first launch, and Choose Folders… later). Debug runs that click through it keep it hidden.
@@ -735,6 +888,7 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     // The shortcut beside Search… only where DigUp grabs it: elsewhere the desktop has it, maybe changed there.
     let accelerator = (shell.shortcut == Method::Grab).then(|| shell.hotkey());
     let search = MenuItem::with_id(app, "search", "Search…", true, accelerator.as_deref())?;
+    let open = MenuItem::with_id(app, "open", "Open DigUp", true, None::<&str>)?;
     let folders = MenuItem::with_id(app, "folders", "Choose Folders…", true, None::<&str>)?;
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -742,7 +896,8 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &search, &folders, &index, &settings, &PredefinedMenuItem::separator(app)?, &quit_item],
+        &[&status, &separator, &search, &open, &folders, &index, &settings, &PredefinedMenuItem::separator(app)?,
+          &quit_item],
     )?;
     // A Mac's menu bar takes a template (it colors it); trays elsewhere show the app's own small icon.
     #[cfg(target_os = "macos")]
@@ -757,6 +912,13 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "search" => show_panel(app),
+            "open" => {
+                if app.state::<Arc<Shell>>().is_set_up() {
+                    let _ = show_window(app);
+                } else {
+                    let _ = show_setup(app);
+                }
+            }
             "folders" => {
                 let _ = show_setup(app);
             }
@@ -768,23 +930,39 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            // Windows and Linux: a click opens the panel, the menu is on the other button.
+            // Windows (and trays on Linux that report clicks): a click opens DigUp's window, as a click on an app's
+            // tray icon does there; the menu is on the other button. The panel is the shortcut's.
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                 if !cfg!(target_os = "macos") {
-                    toggle_panel(tray.app_handle());
+                    let app = tray.app_handle();
+                    if app.state::<Arc<Shell>>().is_set_up() {
+                        let _ = show_window(app);
+                    } else {
+                        let _ = show_setup(app);
+                    }
                 }
             }
         })
         .build(app)?;
-    *shell.status.lock().unwrap() = Some(status);
+    *shell.status_item.lock().unwrap() = Some(status);
     Ok(())
 }
 
+/// A problem to see in the tray's first line (the shortcut is taken…), until indexing next has news.
 fn set_status(app: &AppHandle, text: &str) {
-    if let Some(status) = app.state::<Arc<Shell>>().status.lock().unwrap().as_ref() {
+    if let Some(status) = app.state::<Arc<Shell>>().status_item.lock().unwrap().as_ref() {
         let _ = status.set_text(text);
     }
-    let _ = app.emit("status", text);
+}
+
+/// Indexing or the model moved on: the tray's first line and every page follow (status.rs has the words).
+fn changed(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let snapshot = shell.snapshot();
+    if let Some(status) = shell.status_item.lock().unwrap().as_ref() {
+        let _ = status.set_text(snapshot["line"].as_str().unwrap_or_default());
+    }
+    let _ = app.emit("state", snapshot);
 }
 
 // MARK: The helpers' events
@@ -805,18 +983,10 @@ fn index_event(app: &AppHandle, event: Value) {
     if cfg!(debug_assertions) {
         println!("index: {event}");
     }
-    let count = |key: &str| event[key].as_u64().unwrap_or(0);
+    app.state::<Arc<Shell>>().status.lock().unwrap().apply(&event);
     match event["event"].as_str().unwrap_or_default() {
-        "file" => {
-            set_status(app, &format!("Indexing {} of {}", count("done"), count("total")));
-            reload(app, false);
-        }
-        "rest" => {
-            set_status(app, &format!("Reading the rest of {} long files", count("files")));
-            reload(app, false);
-        }
+        "file" | "rest" => reload(app, false),
         "idle" => {
-            set_status(app, &format!("Up to date · {} files", count("searchable")));
             reload(app, true);
             // A debug run through setup searches once the first index is in.
             let shell = app.state::<Arc<Shell>>();
@@ -827,12 +997,11 @@ fn index_event(app: &AppHandle, event: Value) {
                 }
             }
         }
-        "waiting" => set_status(app, "Waiting for the model"),
-        "error" => set_status(app, &format!("Indexing: {}", event["message"].as_str().unwrap_or("error"))),
         "exit" => reload(app, true),
         "ended" => index_ended(app, &event),
         _ => {}
     }
+    changed(app);
     let _ = app.emit("helper", json!({"from": "index", "event": event}));
 }
 
@@ -863,30 +1032,26 @@ fn model_event(app: &AppHandle, event: Value) {
         println!("model: {event}");
     }
     let shell = app.state::<Arc<Shell>>().inner().clone();
+    let before = shell.model_state.lock().unwrap().clone();
     let state = match event["event"].as_str().unwrap_or_default() {
         "progress" => {
             let (bytes, total) = (event["all_bytes"].as_f64().unwrap_or(0.0), event["all_total"].as_f64().unwrap_or(1.0));
-            set_status(app, &format!("Downloading the model · {:.0}%", 100.0 * bytes / total.max(1.0)));
             json!({"state": "downloading", "bytes": bytes, "total": total})
         }
         "file" => json!({"state": "downloading", "from": event["from"]}),
         "verifying" => json!({"state": "checking"}),
         "waiting" => json!({"state": "waiting"}),
-        "retry" => json!({"state": "downloading", "problem": event["message"]}),
+        // Where it got to stays shown while it waits to try again.
+        "retry" => json!({"state": "downloading", "bytes": before["bytes"], "total": before["total"], "problem": event["message"]}),
         "done" => json!({"state": "ready"}),
-        "error" => {
-            set_status(app, "The model couldn't download");
-            json!({"state": "failed", "message": event["message"]})
-        }
+        "error" => json!({"state": "failed", "message": event["message"]}),
         _ => return,
     };
     let ready = state["state"] == "ready";
     *shell.model_state.lock().unwrap() = state.clone();
     let _ = app.emit("model", state);
+    changed(app);
     if ready {
-        if shell.folders().is_empty() {
-            set_status(app, "No folders chosen yet");
-        }
         run_index(app);
     }
 }
@@ -894,6 +1059,9 @@ fn model_event(app: &AppHandle, event: Value) {
 /// Has the search service read the index again: at once when indexing settles, else at most every three seconds.
 fn reload(app: &AppHandle, now: bool) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
+    if shell.quitting.load(Ordering::SeqCst) {
+        return;
+    }
     {
         let mut reloaded = shell.reloaded.lock().unwrap();
         if !now && reloaded.elapsed() < Duration::from_secs(3) {

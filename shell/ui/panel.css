@@ -13,6 +13,7 @@
   --selected: rgba(10, 132, 255, 0.2);
   --chip: rgba(0, 0, 0, 0.06);
   --mark: rgba(242, 162, 42, 0.28);
+  --link: #0a6fd8;
   --list-width: 330px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell,
     "Noto Sans", sans-serif;
@@ -30,6 +31,7 @@
     --selected: rgba(10, 132, 255, 0.32);
     --chip: rgba(255, 255, 255, 0.09);
     --mark: rgba(242, 162, 42, 0.35);
+    --link: #4aa3ff;
   }
 }
 
@@ -198,6 +200,13 @@ html, body {
   border-radius: 99px;
   background: var(--chip);
   color: var(--secondary);
+}
+
+.more {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--link);
+  padding: 3px 10px 4px;
 }
 
 .weaker {

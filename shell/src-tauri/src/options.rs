@@ -31,9 +31,14 @@ pub struct Options {
     pub debug_quit: bool,
     /// Debug runs: show the panel at launch and keep it up when it loses focus.
     pub debug_show: bool,
+    /// Debug runs: the window opens (hidden unless `debug_show`) with this query typed in ("" for its home) and reports
+    /// what it showed.
+    pub debug_window: Option<String>,
     /// A desktop shortcut's command (hotkey.rs): show or hide the panel of the DigUp already running, or start DigUp
     /// with the panel up.
     pub toggle: bool,
+    /// Started at login (the autostart entry says so): DigUp waits in the tray. Opened by hand, it shows its window.
+    pub at_login: bool,
 }
 
 impl Options {
@@ -50,7 +55,9 @@ impl Options {
             debug_query: None,
             debug_quit: false,
             debug_show: false,
+            debug_window: None,
             toggle: false,
+            at_login: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -68,7 +75,9 @@ impl Options {
                 "--debug-query" => options.debug_query = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
+                "--debug-window" => options.debug_window = Some(value()?),
                 "--toggle" => options.toggle = true,
+                "--at-login" => options.at_login = true,
                 _ => return Err(format!("unknown argument {arg}")),
             }
         }

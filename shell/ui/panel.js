@@ -2,31 +2,19 @@
 // results at once (the last word as a prefix); once typing pauses for 120 ms the meaning results replace them (the
 // query was embedded while you typed). Results far weaker than the best are folded under "N weaker matches". The
 // helper (`digup search-service`) does the work; the Mac app's panel (Sources/DigUpApp/SearchPanel.swift) is the
-// reference for how it behaves.
+// reference for how it behaves. results.js has what a result says.
 "use strict";
-
-const tauri = window.__TAURI__;
-const invoke = (command, args) => tauri.core.invoke(command, args);
-const ask = (request) => invoke("ask", { request });
-const fileURL = (path) => tauri.core.convertFileSrc(path);
 
 const TYPING_PAUSE = 120;          // ms after the last keystroke until the meaning results show
 const ROWS_PER_GROUP = 6;
 const FIELD_HEIGHT = 56;
 const PANEL_HEIGHT = 480;
 const WEAKER = "\u0000weaker";     // the selectable row that folds and unfolds the weaker matches
-const isMac = /Mac/.test(navigator.platform);
 // Wayland: the window fills the screen and this page places the panel (the shell's wayland.rs).
 const fillsScreen = new URLSearchParams(location.search).has("fills");
-const isWindows = /Win/.test(navigator.platform);
-const MOD = isMac ? "⌘" : "Ctrl+";
-const FILE_MANAGER = isMac ? "Finder" : isWindows ? "Explorer" : "Files";
-// Pictures every web view shows as they are; anything else (HEIC, TIFF, RAW…) comes as JPEG from the helper.
-const SHOWN_AS_IS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp"]);
-const GROUP_OF = { screenshot: "Screenshots", image: "Images", pdf: "Documents", doc: "Documents", video: "Video",
-                   audio: "Audio", code: "Code" };
-const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: "Document", audio: "Audio",
-                     video: "Video", code: "Code" };
+// A group's name in the window's kind filters.
+const FILTER_OF = { Screenshots: "screenshots", Images: "images", Documents: "documents", Video: "video",
+                    Audio: "audio" };
 
 const $ = (id) => document.getElementById(id);
 const $panel = $("panel"), $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
@@ -47,7 +35,6 @@ const state = {
   navigated: false,      // the arrow keys moved the selection since the last edit
   encoder: "stopped",
   height: FIELD_HEIGHT,
-  home: "",
   error: null,
   indexing: null,        // {done, total} while the index helper works through new files
 };
@@ -153,6 +140,11 @@ function revealSelected() {
   if (hit) invoke("reveal", { path: hit.path }).catch(failed);
 }
 
+/// The same search in the window, for a bigger look (only one kind, if given).
+function openInWindow(kind) {
+  invoke("open_window", { query: $query.value.trim(), kind: kind ?? null }).catch(failed);
+}
+
 // MARK: Drawing
 
 /// The panel's height: the window's, or in a window that fills the screen the panel's own, whose place the shell is
@@ -196,6 +188,13 @@ function renderList() {
   for (const group of state.groups) {
     $list.append(element("div", "group-title", group.title));
     for (const hit of group.rows) $list.append(row(hit));
+    // More of this kind than the panel has room for: all of them in the window.
+    if (group.total > group.rows.length && FILTER_OF[group.title]) {
+      const more = element("div", "more", `Show all ${group.total} ${group.title.toLowerCase()}…`);
+      more.title = `Open them in the DigUp window (${MOD}O shows everything)`;
+      more.onclick = () => openInWindow(FILTER_OF[group.title]);
+      $list.append(more);
+    }
   }
   if (state.weaker.length) {
     const fold = element("div", "weaker" + (state.showWeaker ? " open" : "") + (state.selection === WEAKER ? " selected" : ""));
@@ -237,10 +236,7 @@ function row(hit) {
 /// kind's icon. All come small from the helper (a full-size photo per row would cost the web view hundreds of MB).
 function thumbnail(hit) {
   const pixels = Math.round(36 * (window.devicePixelRatio || 1));
-  const what = hit.kind === "image" || hit.kind === "screenshot" ? ["image", null]
-    : hit.kind === "video" ? ["video", hit.loc ?? 0.5]
-    : hit.kind === "pdf" ? ["pdf", hit.segment === "page" || hit.segment === "page_image" ? hit.loc : 1]
-    : null;
+  const what = renderOf(hit);
   if (!what) return kindIcon(hit.kind);
   const image = element("img", "thumb");
   image.alt = "";
@@ -377,161 +373,6 @@ function message(title, text) {
   return box;
 }
 
-// MARK: What a result says
-
-/// The page or moment that matched, as a badge: "p. 3", "0:06", "♪ 0:25" (a video's sound), "L12–40" (code).
-function placeOf(hit) {
-  if (hit.loc == null) return null;
-  switch (hit.segment) {
-    case "page":
-    case "page_image": return `p. ${Math.trunc(hit.loc)}`;
-    case "frame": return clock(hit.loc);
-    case "audio": return hit.kind === "video" ? `♪ ${clock(hit.loc)}` : clock(hit.loc);
-    case "lines": {
-      const first = Math.trunc(hit.loc), last = Math.trunc(hit.loc_end ?? hit.loc);
-      return first === last ? `L${first}` : `L${first}–${last}`;
-    }
-    case "cells": return span(hit);
-    default: return null;
-  }
-}
-
-function span(hit) {
-  if (hit.loc == null) return null;
-  const first = Math.trunc(hit.loc), last = Math.trunc(hit.loc_end ?? hit.loc);
-  const what = hit.segment === "cells" ? ["cell", "cells"] : ["line", "lines"];
-  return first === last ? `${what[0]} ${first}` : `${what[1]} ${first}–${last}`;
-}
-
-/// Why it's here, in a few words: "Matches the picture", "Matches the frame at 0:06".
-function reasonOf(hit) {
-  const meaning = (hit.z ?? 0) >= 2, words = hit.keyword_rank != null;
-  if (!meaning) return words ? "Has your words" : "Matches its name";
-  const at = hit.loc != null ? clock(hit.loc) : "";
-  const page = hit.loc != null ? `page ${Math.trunc(hit.loc)}` : "a page";
-  switch (hit.segment) {
-    case "image": return hit.kind === "screenshot" ? "Matches what's on screen" : "Matches the picture";
-    case "ocr": return "Matches the text in it";
-    case "frame": return `Matches the frame at ${at}`;
-    case "audio": return hit.kind === "video" ? `Matches the sound at ${at}` : `Matches what's heard at ${at}`;
-    case "page": return `Matches the text on ${page}`;
-    case "page_image": return `Matches ${page}`;
-    case "chunk": return "Matches its text";
-    case "lines":
-    case "cells": return `Matches ${span(hit) ?? "the code"}`;
-    default: return "Matches its name";
-  }
-}
-
-/// "Screenshot · Oct 7, 2026 · 1440 × 900 · 62 KB", "PDF · … · 463 pages, 120 read so far · 23 MB"
-function details(hit) {
-  const info = hit.info || {};
-  const parts = [KIND_TITLE[hit.kind] || "File", dateOf(hit.modified)];
-  if (info.width && info.height) parts.push(`${info.width} × ${info.height}`);
-  const readTo = info.read_to != null ? Number(info.read_to) : null;
-  if (info.pages) {
-    const pages = Number(info.pages);
-    parts.push((pages === 1 ? "1 page" : `${pages.toLocaleString()} pages`) + (readTo != null ? `, ${readTo} read so far` : ""));
-  } else if (readTo != null) parts.push("partly read so far");
-  if (info.lines) parts.push(Number(info.lines) === 1 ? "1 line" : `${Number(info.lines).toLocaleString()} lines`);
-  if (info.duration) parts.push(clock(Number(info.duration)));
-  if (hit.size > 0) parts.push(bytes(hit.size));
-  return parts.join(" · ");
-}
-
-function nameOf(path) {
-  return path.split(/[\\/]/).pop();
-}
-
-function extensionOf(path) {
-  const name = nameOf(path);
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-}
-
-/// Where the file is: "~/Downloads/Screenshots"; code says where it is in its repo: "billing/payments".
-function folderOf(hit) {
-  const folder = hit.path.slice(0, Math.max(0, hit.path.search(/[\\/][^\\/]*$/)));
-  const repo = hit.info?.repo;
-  if (hit.kind === "code" && repo && hit.path.startsWith(repo + "/")) {
-    return folder.slice(repo.slice(0, repo.search(/[\\/][^\\/]*$/)).length + 1);
-  }
-  const shown = state.home && folder.startsWith(state.home) ? "~" + folder.slice(state.home.length) : folder;
-  return isWindows ? shown.replaceAll("/", "\\") : shown;
-}
-
-function clock(seconds) {
-  const total = Math.trunc(seconds);
-  const two = (n) => String(n).padStart(2, "0");
-  return total >= 3600 ? `${Math.trunc(total / 3600)}:${two(Math.trunc(total / 60) % 60)}:${two(total % 60)}`
-                       : `${Math.trunc(total / 60)}:${two(total % 60)}`;
-}
-
-function dateOf(seconds) {
-  return new Date(seconds * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
-
-/// Sizes the way file managers count them (1 KB = 1,000 bytes): "62 KB", "2.1 MB".
-function bytes(count) {
-  if (count < 1000) return `${count} bytes`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = count / 1000, unit = 0;
-  while (value >= 1000 && unit < units.length - 1) { value /= 1000; unit += 1; }
-  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
-
-/// An excerpt with the words keyword search found (marked « ») in bold.
-function marked(excerpt) {
-  return escaped(excerpt).replace(/«([^»]*)»/g, "<b>$1</b>");
-}
-
-/// A passage with the query's words marked where they start a word.
-function highlighted(text, query) {
-  const words = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((word) => word.length > 1))];
-  let html = escaped(text);
-  if (!words.length) return html;
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
-  return html.replace(pattern, "<mark>$1</mark>");
-}
-
-function escaped(text) {
-  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-}
-
-function element(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text != null) node.textContent = text;
-  return node;
-}
-
-function kindIcon(kind) {
-  const icon = element("div", "thumb icon");
-  icon.innerHTML = ICONS[kind] || ICONS.doc;
-  return icon;
-}
-
-/// The helper's JPEG of a page, a frame or a picture, asked for once per file and place.
-const renders = new Map();
-function rendered(path, kind, loc, pixels) {
-  const key = `${path}|${kind}|${loc}|${pixels}`;
-  if (!renders.has(key)) renders.set(key, ask({ op: "render", path, kind, loc, pixels }).then((reply) => reply.image));
-  return renders.get(key);
-}
-
-const ICONS = {
-  chevron: '<svg class="chevron" viewBox="0 0 16 16" width="12" height="12"><path d="M6 3.5 L10.5 8 L6 12.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  play: '<svg viewBox="0 0 20 20"><path d="M5 3 L17 10 L5 17 Z"/></svg>',
-  found: '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5 M10 7 V13 M7 10 H13"/></svg>',
-  doc: '<svg viewBox="0 0 24 24"><path d="M6 3 H14 L19 8 V21 H6 Z M14 3 V8 H19 M9 12 H16 M9 15 H16 M9 18 H13"/></svg>',
-  pdf: '<svg viewBox="0 0 24 24"><path d="M6 3 H14 L19 8 V21 H6 Z M14 3 V8 H19 M9 13 H16 M9 16 H14"/></svg>',
-  code: '<svg viewBox="0 0 24 24"><path d="M9 7 L4 12 L9 17 M15 7 L20 12 L15 17"/></svg>',
-  audio: '<svg viewBox="0 0 24 24"><path d="M3 12 H5 M7 8 V16 M10 5 V19 M13 9 V15 M16 6 V18 M19 10 V14 M21 12 H22"/></svg>',
-  video: '<svg viewBox="0 0 24 24"><path d="M4 6 H15 V18 H4 Z M15 10 L20 7 V17 L15 14"/></svg>',
-  image: '<svg viewBox="0 0 24 24"><path d="M4 5 H20 V19 H4 Z M4 16 L9 11 L13 15 L16 12 L20 16"/></svg>',
-};
-ICONS.screenshot = ICONS.image;
-
 // MARK: Keys and events
 
 $query.addEventListener("input", queryChanged);
@@ -555,6 +396,12 @@ document.addEventListener("keydown", (event) => {
       if (modifier) revealSelected();
       else if (state.selection === WEAKER) toggleWeaker();
       else openSelected();
+      break;
+    case "o":
+    case "O":
+      if (!modifier || event.altKey || event.shiftKey) return;
+      event.preventDefault();
+      openInWindow();
       break;
   }
 });
@@ -584,8 +431,6 @@ tauri.event.listen("helper", ({ payload }) => {
     if (state.phase !== "empty") renderFooter();
   }
 });
-
-tauri.path.homeDir().then((home) => { state.home = home.replace(/[\\/]$/, ""); }).catch(() => {});
 
 // Debug runs (--debug-query): type the query in, and once the meaning results and their pictures are in, report
 // what the panel shows.
