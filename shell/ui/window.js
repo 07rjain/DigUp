@@ -371,7 +371,9 @@ function columns() {
 }
 
 function open(hit) {
-  invoke("open_path", { path: hit.path }).catch(failed);
+  const opening = hit.kind === "code" ? invoke("open_code", { path: hit.path, line: codeLine(hit) })
+    : invoke("open_path", { path: hit.path });
+  opening.catch(failed);
 }
 
 function reveal(hit) {
@@ -486,9 +488,13 @@ function codeHintOrOff() {
   const icon = element("div", "brand-icon");
   icon.innerHTML = ICONS.code;
   if (state.codePhase === "off") {
+    const actions = element("div", "actions");
+    const choose = element("button", "primary", "Choose Code Folders…");
+    choose.onclick = () => invoke("choose_code_folders").catch(failed);
+    actions.append(choose);
     return centered(icon, element("h3", "", "Code search is off"),
                     element("p", "", "DigUp can find code by what it does, in folders you choose for it. Code gets an "
-                            + "index of its own and never shows up in other searches."));
+                            + "index of its own and never shows up in other searches."), actions);
   }
   return centered(icon, element("h3", "", "Search your code"),
                   element("p", "", "Say what the code does, or type a name that's in it."));
@@ -920,6 +926,11 @@ document.addEventListener("keydown", (event) => {
 tauri.event.listen("state", ({ payload }) => {
   const before = state.app;
   state.app = payload;
+  // Code search turned on or off (Settings): the Code chip, the examples, a code: search.
+  if (payload.hasCode != null && payload.hasCode !== state.info.hasCode) {
+    state.info.hasCode = payload.hasCode;
+    if (isCode() && state.query.trim()) run(); else render();
+  }
   renderStatus();
   if (payload.searchable !== before.searchable || payload.files !== before.files) loadIndexed();
 });

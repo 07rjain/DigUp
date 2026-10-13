@@ -3,6 +3,8 @@
 // first pass takes (`digup estimate`; the times once the helper has timed this computer with the model), and open to
 // their subfolders. Indexing starts as the folders step is left; the last step shows it going (the download, then the
 // files, with the time left) until Done opens the window. Choose Folders… later is the folders step alone, with Save.
+// `?code`: the folders step for code search (Settings → Code → Add Folders…, as the Mac app's code folder list): folders
+// with code, each with the time its code takes to read and its index's size, open to their repositories.
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -17,6 +19,7 @@ const $ = (id) => document.getElementById(id);
 let page = 0;
 let firstTime = true;
 let info = { offered: [], chosen: [], skipped: [], hotkey: "", model: { state: "checking" }, state: {}, auto: false };
+const codeMode = new URLSearchParams(location.search).has("code");
 
 // MARK: Paths
 // The helper reports folders with forward slashes; on Windows the shell gives them with backslashes, and case doesn't
@@ -96,7 +99,7 @@ async function estimate(paths) {
   estimating += 1;
   renderFolders();
   try {
-    const answers = await invoke("estimate", { folders: paths.map(native) });
+    const answers = await invoke("estimate", { folders: paths.map(native), code: codeMode });
     for (const answer of answers) {
       estimates.set(key(answer.folder), answer);
       if (answer.readable !== false) calibrated = answer.calibrated !== false;
@@ -114,10 +117,11 @@ async function estimate(paths) {
 /// What a folder adds as checked now: all of it but its unchecked subfolders, or just its checked ones.
 function partOf(row) {
   const answer = estimates.get(key(row));
-  const part = { seconds: 0, later: 0, files: {}, kinds: {} };
+  const part = { seconds: 0, later: 0, bytes: 0, files: {}, kinds: {} };
   if (!answer) return null;
   const add = (estimate, sign) => {
     part.seconds += sign * (estimate.seconds || 0);
+    part.bytes += sign * (estimate.bytes || 0);
     part.later += sign * (estimate.later_seconds || 0);
     for (const [kind, count] of Object.entries(estimate.files || {})) part.files[kind] = (part.files[kind] || 0) + sign * count;
     for (const [kind, seconds] of Object.entries(estimate.kind_seconds || {})) {
@@ -138,11 +142,12 @@ function partOf(row) {
 
 /// The whole selection: files and seconds by kind, and the first pass and the rest of long files.
 function selectionPart() {
-  const total = { seconds: 0, later: 0, files: {}, kinds: {} };
+  const total = { seconds: 0, later: 0, bytes: 0, files: {}, kinds: {} };
   for (const row of rows) {
     const part = partOf(row);
     if (!part) continue;
     total.seconds += Math.max(0, part.seconds);
+    total.bytes += Math.max(0, part.bytes);
     total.later += Math.max(0, part.later);
     for (const [kind, count] of Object.entries(part.files)) total.files[kind] = (total.files[kind] || 0) + Math.max(0, count);
     for (const [kind, seconds] of Object.entries(part.kinds)) total.kinds[kind] = (total.kinds[kind] || 0) + Math.max(0, seconds);
@@ -154,6 +159,8 @@ function renderFolders() {
   const list = $("folder-list");
   const scroll = list.closest("main").scrollTop;
   list.replaceChildren(...rows.map(folderBox));
+  if (codeMode && !rows.length) list.append(element("p", "note", "No folders with code turned up in your home folder. Add "
+                                                    + "the ones that hold your repositories."));
   list.closest("main").scrollTop = scroll;
   renderFooter();
 }
@@ -185,7 +192,7 @@ function folderBox(row) {
   if (answer?.failed) text.append(element("div", "counts", "Couldn't look inside it; it can still be searched."));
   else if (answer?.readable === false) text.append(element("div", "counts problem", "Can't read it"));
   else if (part && Object.values(part.files).some((count) => count > 0)) text.append(element("div", "counts", countsText(part.files)));
-  else text.append(element("div", "path", answer ? (Object.keys(answer.files || {}).length ? "Nothing to search in the subfolders checked" : "Nothing DigUp searches in it") : native(row)));
+  else text.append(element("div", "path", answer ? (Object.keys(answer.files || {}).length ? "Nothing to search in the subfolders checked" : codeMode ? "No code here" : "Nothing DigUp searches in it") : native(row)));
   header.append(disclosure, check, text);
   if (answer && !answer.failed && answer.readable !== false && calibrated) header.append(timeOf(part, mark === "off"));
   else if (!answer) header.append(element("div", "time", "…"));
@@ -210,7 +217,8 @@ function folderBox(row) {
 }
 
 function wholePart(answer) {
-  return answer ? { seconds: answer.seconds || 0, later: answer.later_seconds || 0, files: answer.files || {} } : null;
+  return answer ? { seconds: answer.seconds || 0, later: answer.later_seconds || 0, bytes: answer.bytes || 0,
+                    files: answer.files || {} } : null;
 }
 
 function subfolderRow(subfolder) {
@@ -220,8 +228,9 @@ function subfolderRow(subfolder) {
     selection.setSubfolder(subfolder.folder, !on);
     renderFolders();
   };
+  const counts = countsText(subfolder.files || {}) + (codeMode && subfolder.bytes ? ` · ${roughBytes(subfolder.bytes)}` : "");
   item.append(checkbox(on ? "on" : "off", toggle), element("span", "name", nameOf(subfolder.folder)),
-              element("span", "counts", countsText(subfolder.files || {})));
+              element("span", "counts", counts));
   if (calibrated) item.append(timeOf({ seconds: subfolder.seconds, later: subfolder.later_seconds }, !on, true));
   item.onclick = (event) => { if (!event.target.closest("input")) toggle(); };
   return item;
@@ -244,9 +253,15 @@ function timeOf(part, quiet, small) {
   const time = element("div", "time");
   const seconds = part?.seconds || 0;
   time.textContent = seconds < 1 ? (small ? "" : "—") : `about ${roughDuration(seconds)}`;
-  if (!small && (part?.later || 0) >= 30) time.append(element("small", "", `+ ${roughDuration(part.later)} later`));
-  time.title = "How long the first pass takes on this computer. Long PDFs and documents get their first pages in it, "
-    + "and the rest afterwards.";
+  if (codeMode) {
+    if (!small && (part?.bytes || 0) > 0) time.append(element("small", "", roughBytes(part.bytes)));
+    time.title = "How long reading this code takes, once, and about how much room its index needs. After that, only "
+      + "what changes is read again.";
+  } else {
+    if (!small && (part?.later || 0) >= 30) time.append(element("small", "", `+ ${roughDuration(part.later)} later`));
+    time.title = "How long the first pass takes on this computer. Long PDFs and documents get their first pages in it, "
+      + "and the rest afterwards.";
+  }
   if (quiet) time.classList.add("quiet");
   return time;
 }
@@ -254,6 +269,7 @@ function timeOf(part, quiet, small) {
 /// "1,204 pictures · 37 PDFs · 12 documents · 3 videos"
 function countsText(files) {
   const part = (count, one, many) => (count > 0 ? `${count.toLocaleString()} ${count === 1 ? one : many}` : null);
+  if (codeMode) return part(files.code, "file of code", "files of code") || "No code here";
   return [
     part((files.image || 0) + (files.screenshot || 0), "picture", "pictures"),
     part(files.pdf, "PDF", "PDFs"),
@@ -261,6 +277,13 @@ function countsText(files) {
     part(files.audio, "recording", "recordings"),
     part(files.video, "video", "videos"),
   ].filter(Boolean).join(" · ") || "Nothing DigUp searches in it";
+}
+
+/// "360 KB", "12 MB": an index's size, roughly.
+function roughBytes(count) {
+  if (count < 1e6) return `${Math.max(1, Math.round(count / 1e3))} KB`;
+  if (count < 1e9) return `${Math.round(count / 1e6)} MB`;
+  return `${(count / 1e9).toFixed(1)} GB`;
 }
 
 /// "45 s", "4 min", "1.5 h": the precision an estimate deserves (the Mac app's roughDuration).
@@ -295,7 +318,7 @@ function render() {
   $("back").textContent = firstTime ? "Back" : "Cancel";
   $("next").textContent = !firstTime ? "Save" : page === PAGES.length - 1 ? "Done" : "Continue";
   $("next").disabled = page === 1 && !selection.folders().length;
-  $("model").hidden = page === 0 || page === PAGES.length - 1;
+  $("model").hidden = codeMode || page === 0 || page === PAGES.length - 1;
   renderFooter();
   if (PAGES[page] === "ready") renderProgress();
 }
@@ -306,6 +329,11 @@ function renderFooter() {
   if (PAGES[page] === "folders") {
     if (!selection.folders().length) summary = "Choose at least one folder";
     else if (estimating > 0 || rows.some((row) => selection.isSearched(row) && !estimates.has(key(row)))) summary = "Looking at your folders…";
+    // Turning code search on: what reading the code takes, and its index.
+    else if (codeMode && !info.chosen.length) {
+      const total = selectionPart();
+      summary = calibrated ? `About ${roughDuration(total.seconds)} to read, an index of about ${roughBytes(total.bytes)}` : "";
+    }
     // Later (Choose Folders…) the folders searched already aren't read again: no first pass to tell.
     else if (!firstTime) summary = "";
     else if (calibrated) summary = `First pass: about ${roughDuration(selectionPart().seconds)}`;
@@ -320,7 +348,8 @@ $("next").addEventListener("click", async () => {
     $("next").disabled = true;
     try {
       // Indexing starts now (once the model is in), while the rest of setup goes on.
-      await invoke("apply_setup_folders", { folders: selection.folders().map(native), skipped: selection.skips().map(native) });
+      await invoke(codeMode ? "set_code_folders" : "apply_setup_folders",
+                   { folders: selection.folders().map(native), skipped: selection.skips().map(native) });
     } catch (error) {
       $("summary").textContent = String(error);
       $("next").disabled = false;
@@ -545,8 +574,14 @@ function element(tag, className, text) {
 }
 
 async function start() {
-  info = await invoke("setup_info");
+  info = await invoke(codeMode ? "code_setup_info" : "setup_info");
   firstTime = !info.setUp;
+  if (codeMode) {
+    $("folders").querySelector("h2").textContent = "Which code should DigUp search?";
+    $("folders-subtitle").textContent = "Pick the folders with your code, and open one to leave out some of its "
+      + "repositories. DigUp reads what git keeps (not dependencies or build output) into an index of its own, so "
+      + "code shows up only when you search for code.";
+  }
   progress.state = info.state || {};
   // The usual folders, then any chosen before (a chosen subfolder of a folder listed shows inside it). On a first
   // launch they start checked, all but Downloads (much of what lands there is passing through).
@@ -563,10 +598,12 @@ async function start() {
     if ([...selection.chosen, ...selection.skipped].some((path) => same(parentOf(path), row))) open.add(key(row));
   }
   estimate([...rows]);
-  showModel(info.model);
-  tauri.event.listen("model", ({ payload }) => showModel(payload));
-  showKeys(info.hotkey);
-  showShortcut(info.shortcut);
+  if (!codeMode) {
+    showModel(info.model);
+    tauri.event.listen("model", ({ payload }) => showModel(payload));
+    showKeys(info.hotkey);
+    showShortcut(info.shortcut);
+  }
   if (!firstTime) page = 1;   // Choose Folders…: the folders, with Save
   const asked = PAGES.indexOf(new URLSearchParams(location.search).get("page"));   // dev snapshots: ?page=folders
   if (asked >= 0) page = asked;

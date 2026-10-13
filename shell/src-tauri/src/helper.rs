@@ -255,6 +255,20 @@ impl IndexService {
         Ok(())
     }
 
+    /// Code search's folders changed: the running helper syncs the code index (`run` would sync the main one), or one
+    /// starts (it syncs both).
+    pub fn sync_code(&self, launch: &Launch) -> Result<(), String> {
+        {
+            let mut running = self.running.lock().unwrap();
+            if let Some(indexing) = running.as_mut() {
+                if matches!(indexing.child.try_wait(), Ok(None)) && indexing.args == launch.args {
+                    return writeln!(indexing.stdin, "sync code").and_then(|_| indexing.stdin.flush()).map_err(|e| e.to_string());
+                }
+            }
+        }
+        self.run(launch)
+    }
+
     pub fn stop(&self) {
         if let Some(indexing) = self.running.lock().unwrap().take() {
             stop(indexing.child, indexing.stdin, "stop");

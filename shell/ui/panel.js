@@ -25,6 +25,7 @@ const state = {
   finalGeneration: -1,   // the generation whose meaning results are showing: late keyword results don't replace them
   timer: null,
   phase: "empty",        // empty | words | meaning | wordsOnly | codeHint
+  hasCode: true,         // code search has folders (the state's hasCode)
   text: "",              // what was searched (without "code:")
   isCode: false,
   strong: [],
@@ -133,7 +134,10 @@ function toggleWeaker() {
 
 function openSelected() {
   const hit = selectedHit();
-  if (hit) invoke("open_path", { path: hit.path }).catch(failed);
+  if (!hit) return;
+  const opening = hit.kind === "code" ? invoke("open_code", { path: hit.path, line: codeLine(hit) })
+    : invoke("open_path", { path: hit.path });
+  opening.catch(failed);
 }
 
 function revealSelected() {
@@ -250,7 +254,10 @@ function thumbnail(hit) {
 function renderPreview() {
   $preview.replaceChildren();
   if (!state.strong.length && !state.weaker.length) {
-    if (state.phase === "codeHint") {
+    if (state.isCode && !state.hasCode) {
+      $preview.append(message("Code search is off", "Choose folders with code in Settings → Code, and DigUp finds "
+        + "code by what it does."));
+    } else if (state.phase === "codeHint") {
       $preview.append(message("Search your code", "Say what the code does, or type a name that's in it."));
     } else if (state.indexing) {
       const { done, total } = state.indexing;
@@ -426,6 +433,7 @@ tauri.event.listen("helper", ({ payload }) => {
 /// as the Mac's panel has, with its progress as a ring.
 function showState(app) {
   state.indexing = app.indexing || null;
+  state.hasCode = app.hasCode !== false;
   state.caveat = app.caveat || null;
   $activity.hidden = !app.badge;
   if (app.badge) {

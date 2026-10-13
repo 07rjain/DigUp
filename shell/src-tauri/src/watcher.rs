@@ -1,5 +1,6 @@
 //! Watching the chosen folders: a change where indexing reads asks the index helper to sync, two seconds after the last
-//! one (a camera import or an unzip is a burst of events). `notify` uses ReadDirectoryChangesW on Windows, inotify on
+//! one (a camera import or an unzip is a burst of events); in code search's folders a minute after the code goes quiet
+//! (ten at most), as on the Mac, so the code index doesn't follow every save. `notify` uses ReadDirectoryChangesW on Windows, inotify on
 //! Linux, FSEvents on a Mac. Changes where the crawl never goes are passed over (the engine's `Rules.isWalked`): hidden
 //! folders (a leading dot, or Windows' hidden flag, which AppData has), developer folders, `.noindex` folders, skipped
 //! folders, and DigUp's own index. With a home folder chosen, other apps' caches would ask for a sync every few seconds.
@@ -19,8 +20,8 @@ pub struct FolderWatcher {
 
 impl FolderWatcher {
     /// Watches `folders` (less `skipped` inside them); `changed` runs on the watcher's own thread after each burst of
-    /// changes. Dropping it stops.
-    pub fn start(folders: &[PathBuf], skipped: Vec<PathBuf>, ignore: Option<PathBuf>,
+    /// changes: once nothing has changed for `quiet`, or `longest` after the burst began. Dropping it stops.
+    pub fn start(folders: &[PathBuf], skipped: Vec<PathBuf>, ignore: Option<PathBuf>, quiet: Duration, longest: Duration,
                  changed: impl Fn() + Send + 'static) -> FolderWatcher {
         let (sender, receiver) = mpsc::channel::<()>();
         let roots = folders.to_vec();
@@ -49,7 +50,8 @@ impl FolderWatcher {
         }
         std::thread::spawn(move || {
             while receiver.recv().is_ok() {
-                while receiver.recv_timeout(Duration::from_secs(2)).is_ok() {}
+                let began = std::time::Instant::now();
+                while began.elapsed() < longest && receiver.recv_timeout(quiet).is_ok() {}
                 changed();
             }
         });

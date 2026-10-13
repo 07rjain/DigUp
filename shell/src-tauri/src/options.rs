@@ -16,12 +16,17 @@ pub struct Options {
     pub models: Option<PathBuf>,
     /// The folders to search and keep indexed, instead of the settings' (dev runs; setup is then skipped).
     pub roots: Vec<PathBuf>,
+    /// Code search's folders, instead of the settings' (dev runs).
+    pub code_roots: Vec<PathBuf>,
     /// The hotkey, instead of the settings'.
     pub hotkey: Option<String>,
     /// The settings file, instead of the one in the app's config folder (a fresh first launch in tests).
     pub settings: Option<PathBuf>,
     /// The folders setup offers, instead of the usual ones (Documents, Pictures…): dev runs never offer real folders.
     pub offered: Option<Vec<PathBuf>>,
+    /// The folders with code that Settings offers, instead of the ones found in the home folder (dev runs offer none
+    /// without it).
+    pub offered_code: Option<Vec<PathBuf>>,
     /// Debug runs: setup clicks through by itself (all offered folders, the default hotkey).
     pub debug_setup: bool,
     /// Debug runs: the panel types this query in when it loads and reports what it showed (`debug_report`), hidden
@@ -50,9 +55,11 @@ impl Options {
             index: None,
             models: None,
             roots: Vec::new(),
+            code_roots: Vec::new(),
             hotkey: None,
             settings: None,
             offered: None,
+            offered_code: None,
             debug_setup: false,
             debug_query: None,
             debug_quit: false,
@@ -71,9 +78,11 @@ impl Options {
                 "--models" => options.models = Some(value()?.into()),
                 // Separated as PATH is: ":" here, ";" on Windows.
                 "--roots" => options.roots = std::env::split_paths(&value()?).collect(),
+                "--code-roots" => options.code_roots = std::env::split_paths(&value()?).collect(),
                 "--hotkey" => options.hotkey = Some(value()?),
                 "--settings" => options.settings = Some(value()?.into()),
                 "--offer" => options.offered = Some(std::env::split_paths(&value()?).collect()),
+                "--offer-code" => options.offered_code = Some(std::env::split_paths(&value()?).collect()),
                 "--debug-setup" => options.debug_setup = true,
                 "--debug-query" => options.debug_query = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,

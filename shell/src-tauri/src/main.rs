@@ -5,6 +5,8 @@
 // behavior.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod code;
+mod editors;
 mod helper;
 mod hotkey;
 mod hours;
@@ -62,6 +64,8 @@ struct Shell {
     /// What indexing is doing, from the index helper's events (status.rs).
     status: Mutex<Status>,
     watcher: Mutex<Option<FolderWatcher>>,
+    /// Code search's folders, watched apart: their changes reach the code index a minute after the code goes quiet.
+    code_watcher: Mutex<Option<FolderWatcher>>,
     /// The tray menu's first line (what's going on), Index Now, and Pause or Resume Indexing.
     status_item: Mutex<Option<MenuItem<Wry>>>,
     index_item: Mutex<Option<MenuItem<Wry>>>,
@@ -95,6 +99,14 @@ impl Shell {
             return self.options.roots.iter().map(|root| root.display().to_string()).collect();
         }
         self.settings.lock().unwrap().folders.clone()
+    }
+
+    /// Code search's folders: the launch arguments' in dev runs, else the settings'.
+    fn code_folders(&self) -> Vec<String> {
+        if !self.options.code_roots.is_empty() {
+            return self.options.code_roots.iter().map(|root| root.display().to_string()).collect();
+        }
+        self.settings.lock().unwrap().code_folders.clone()
     }
 
     fn is_set_up(&self) -> bool {
@@ -148,14 +160,15 @@ impl Shell {
             args.push("--prune".into());
         }
         args.extend(self.index_arguments());
-        for folder in &settings.skipped {
-            args.extend(["--exclude".to_string(), folder.clone()]);
-        }
-        for extension in &settings.skip_types {
-            args.extend(["--exclude-ext".to_string(), extension.clone()]);
-        }
+        args.extend(folder_arguments(&settings, &self.code_folders()));
         args.extend(self.folders());
         self.launch(args, "index.log")
+    }
+
+    /// Where the code index is (deleted when code search is turned off).
+    fn code_index_files(&self) -> Vec<PathBuf> {
+        let Some(index) = self.options.index_folder() else { return Vec::new() };
+        ["", "-wal", "-shm"].iter().map(|end| index.join(format!("code.sqlite{end}"))).collect()
     }
 
     fn model_ready(&self) -> bool {
@@ -181,8 +194,28 @@ impl Shell {
     /// What the pages show about indexing and the model (status.rs).
     fn snapshot(&self) -> Value {
         let model = self.model_state.lock().unwrap().clone();
-        self.status.lock().unwrap().snapshot(!self.folders().is_empty(), &model)
+        let mut snapshot = self.status.lock().unwrap().snapshot(!self.folders().is_empty(), &model);
+        snapshot["hasCode"] = json!(!self.code_folders().is_empty());
+        snapshot
     }
+}
+
+/// What both helpers are told besides the folders: what's skipped in them, and code search's folders.
+fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    for folder in &settings.skipped {
+        args.extend(["--exclude".to_string(), folder.clone()]);
+    }
+    for extension in &settings.skip_types {
+        args.extend(["--exclude-ext".to_string(), extension.clone()]);
+    }
+    for folder in code_folders {
+        args.extend(["--code-root".to_string(), folder.clone()]);
+    }
+    for folder in &settings.code_skipped {
+        args.extend(["--code-exclude".to_string(), folder.clone()]);
+    }
+    args
 }
 
 // MARK: Commands
@@ -200,14 +233,16 @@ async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, Stri
 /// What indexing these folders would take, one answer per folder (`digup estimate --json`): files by kind, the first
 /// pass's seconds, the rest of long files, subfolders. For setup.
 #[tauri::command]
-async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<Vec<Value>, String> {
+async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
+    // Code folders: what the code index would read in them (its time and size, repository by repository).
+    let code = if code == Some(true) { vec!["--code".to_string()] } else { Vec::new() };
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
     let index = shell.index_arguments();
     shell.estimating.fetch_add(1, Ordering::SeqCst);
     let answers = tauri::async_runtime::spawn_blocking(move || {
         let mut command = std::process::Command::new(&helper);
-        command.arg("estimate").args(&folders).args(&index).arg("--json");
+        command.arg("estimate").args(&folders).args(&index).args(&code).arg("--json");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -319,6 +354,21 @@ fn open_path(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
 }
 
+/// Opens a code result at its line in the editor chosen in Settings (or the first one installed), else in its default
+/// app.
+#[tauri::command]
+fn open_code(app: AppHandle, shell: State<'_, Arc<Shell>>, path: String, line: u32) -> Result<(), String> {
+    hide_panel(app.clone());
+    let choice = shell.settings.lock().unwrap().code_editor.clone();
+    if let Some((editor, program)) = editors::chosen(&choice) {
+        match editor.open(&program, &path, line.max(1)) {
+            Ok(()) => return Ok(()),
+            Err(error) => eprintln!("digup-shell: {} didn't start: {error}", program.display()),
+        }
+    }
+    app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
+}
+
 /// Shows a result in the file manager, selected.
 #[tauri::command]
 fn reveal(app: AppHandle, path: String) -> Result<(), String> {
@@ -383,6 +433,7 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "hotkey": (shell.shortcut != Method::ByHand).then(|| shell.hotkey_text()),
         "state": shell.snapshot(),
         "search": search.map(|(query, kind)| json!({"query": query, "kind": kind})),
+        "hasCode": !shell.code_folders().is_empty(),
         "debugQuery": shell.options.debug_window,
         "debugSettings": shell.options.debug_settings,
     })
@@ -496,10 +547,11 @@ fn main() {
         )
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
-            ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
+            ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
-            remove_folder, set_skipped, set_skip_types, set_index_hours
+            remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
+            remove_code_folder, turn_off_code, set_code_editor
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -534,8 +586,14 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         options.roots.iter().map(|root| root.display().to_string()).collect()
     };
+    let code_folders: Vec<String> = if options.code_roots.is_empty() {
+        settings.code_folders.clone()
+    } else {
+        options.code_roots.iter().map(|root| root.display().to_string()).collect()
+    };
     let mut search_args = vec!["search-service".to_string()];
     search_args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
+    search_args.extend(folder_arguments(&settings, &code_folders));
     search_args.extend(roots);
     let search = SearchService::new(
         Launch {
@@ -577,6 +635,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         model,
         model_state: Mutex::new(json!({"state": "checking"})),
         watcher: Mutex::new(None),
+        code_watcher: Mutex::new(None),
         status: Mutex::new(Status::default()),
         status_item: Mutex::new(None),
         index_item: Mutex::new(None),
@@ -593,6 +652,9 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         logs,
     });
     app.manage(shell.clone());
+    if shell.settings.lock().unwrap().delete_code_index {
+        delete_code_index(&shell);
+    }
 
     make_panel(&handle, shell.centers_panel())?;
     // No tray (a session without a taskbar, a Linux desktop without one): the hotkey and the panel still work.
@@ -649,7 +711,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     if let Err(error) = shell.model.run(&shell.launch(download, "model.log")) {
         model_event(&handle, json!({"event": "error", "message": error}));
     }
-    if !shell.folders().is_empty() {
+    if !shell.folders().is_empty() || !shell.code_folders().is_empty() {
         watch_folders(&handle);
     } else {
         changed(&handle);
@@ -683,51 +745,103 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
 fn apply_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let folders = shell.folders();
-    let (skipped, types) = {
-        let settings = shell.settings.lock().unwrap();
-        (settings.skipped.clone(), settings.skip_types.clone())
-    };
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
     }
+    let request = folders_request(&shell);
     let search = shell.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = search.search.ask(json!({"op": "folders", "roots": folders, "skipped": skipped, "types": types})).await;
+        let _ = search.search.ask(request).await;
     });
     watch_folders(app);
 }
 
-/// Watches the folders, and indexes them now when the model is in.
+/// The search service's "folders": what it searches (without code folders, it closes the code index).
+fn folders_request(shell: &Shell) -> Value {
+    let settings = shell.settings.lock().unwrap().clone();
+    json!({"op": "folders", "roots": shell.folders(), "skipped": settings.skipped, "types": settings.skip_types,
+           "code_roots": shell.code_folders(), "code_skipped": settings.code_skipped})
+}
+
+/// Watches the folders and code search's, and indexes them now when the model is in.
 fn watch_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let folders: Vec<PathBuf> = shell.folders().iter().map(PathBuf::from).collect();
-    changed(app);
-    if folders.is_empty() {
-        return;
-    }
-    let changed = {
-        let app = app.clone();
-        move || run_index(&app)
+    let code_folders: Vec<PathBuf> = shell.code_folders().iter().map(PathBuf::from).collect();
+    let (skipped, code_skipped) = {
+        let settings = shell.settings.lock().unwrap();
+        (settings.skipped.iter().map(PathBuf::from).collect(), settings.code_skipped.iter().map(PathBuf::from).collect())
     };
-    let skipped = shell.settings.lock().unwrap().skipped.iter().map(PathBuf::from).collect();
-    *shell.watcher.lock().unwrap() = Some(FolderWatcher::start(&folders, skipped, shell.options.index_folder(), changed));
-    run_index(app);
+    changed(app);
+    let index = shell.options.index_folder();
+    *shell.watcher.lock().unwrap() = (!folders.is_empty()).then(|| {
+        let app = app.clone();
+        FolderWatcher::start(&folders, skipped, index.clone(), Duration::from_secs(2), Duration::MAX, move || run_index(&app))
+    });
+    *shell.code_watcher.lock().unwrap() = (!code_folders.is_empty()).then(|| {
+        let app = app.clone();
+        FolderWatcher::start(&code_folders, code_skipped, index, Duration::from_secs(60), Duration::from_secs(600),
+                             move || sync_code(&app))
+    });
+    if !folders.is_empty() || !code_folders.is_empty() {
+        run_index(app);
+    }
 }
 
-/// Has the index helper sync and index, once there's a model and a folder (from setup's folders step on), and the
-/// speed check isn't running.
+/// Indexing may run: there's a model and a folder (from setup's folders step on), the speed check isn't running, and
+/// indexing isn't paused or waiting for its hours.
+fn may_index(shell: &Shell) -> bool {
+    (!shell.folders().is_empty() || !shell.code_folders().is_empty()) && shell.model_ready()
+        && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst) && {
+            let status = shell.status.lock().unwrap();
+            !status.paused && status.held_until.is_none()
+        }
+}
+
+/// Has the index helper sync and index.
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
-    if shell.folders().is_empty() || !shell.model_ready() || shell.measuring.load(Ordering::SeqCst)
-        || shell.quitting.load(Ordering::SeqCst) || {
-            let status = shell.status.lock().unwrap();
-            status.paused || status.held_until.is_some()
-        } {
+    if !may_index(&shell) {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
         set_status(app, &format!("Indexing couldn't start: {error}"));
     }
+}
+
+/// Code changed in code search's folders: the code index syncs.
+fn sync_code(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>();
+    if !may_index(&shell) {
+        return;
+    }
+    if let Err(error) = shell.index.sync_code(&shell.index_launch()) {
+        set_status(app, &format!("Indexing couldn't start: {error}"));
+    }
+}
+
+/// Deletes the code index once code search is off (the helpers have let it go: the search service closes it when its
+/// code folders go, an index helper without code folders never opens it). Tried for a while (Windows won't delete a
+/// file still open), then at the next start.
+fn delete_code_index(shell: &Arc<Shell>) {
+    let shell = shell.clone();
+    std::thread::spawn(move || {
+        for _ in 0..30 {
+            if !shell.code_folders().is_empty() {
+                return;   // turned on again meanwhile
+            }
+            let files = shell.code_index_files();
+            if files.iter().all(|file| std::fs::remove_file(file).is_ok() || !file.exists()) {
+                let mut settings = shell.settings.lock().unwrap();
+                if settings.delete_code_index {
+                    settings.delete_code_index = false;
+                    let _ = settings.save(&shell.settings_path);
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
 }
 
 fn stop_helpers(app: &AppHandle) {
@@ -876,6 +990,23 @@ fn window_size(app: &AppHandle) -> (f64, f64) {
     ((area.width * 0.9).clamp(820.0, 1040.0), (area.height * 0.9).clamp(520.0, 700.0))
 }
 
+/// Code search's folders: setup's folder list for code, with Save.
+fn show_code_folders(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("code-folders") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "code-folders", WebviewUrl::App("setup.html?code".into()))
+        .title("Code Folders")
+        .inner_size(720.0, 600.0)
+        .resizable(false)
+        .maximizable(false)
+        .center()
+        .build()?;
+    Ok(())
+}
+
 /// The setup window (first launch, and Choose Folders… later). Debug runs that click through it keep it hidden.
 fn show_setup(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("setup") {
@@ -930,6 +1061,15 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "skipTypes": settings.skip_types,
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),
+        "code": {
+            "folders": shell.code_folders(),
+            "skipped": settings.code_skipped,
+            "editor": if settings.code_editor == "default" { "default" } else {
+                editors::chosen(&settings.code_editor).map(|(editor, _)| editor.id).unwrap_or("default")
+            },
+            "editors": editors::installed().iter().map(|(editor, _)| json!({"id": editor.id, "name": editor.name}))
+                .collect::<Vec<_>>(),
+        },
         "state": shell.snapshot(),
         "version": app.package_info().version.to_string(),
         "debug": shell.options.debug_settings,
@@ -973,6 +1113,106 @@ fn remove_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -
     shell.prune.store(true, Ordering::SeqCst);
     apply_folders(&app);
     Ok(())
+}
+
+/// The code folders window (setup's folder list for code): the folders with code it offers, those chosen, and the
+/// folders skipped in them.
+#[tauri::command]
+async fn code_setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
+    let offered: Vec<PathBuf> = match (&shell.options.offered_code, shell.dev_run()) {
+        (Some(folders), _) => folders.clone(),
+        (None, true) => Vec::new(),   // dev runs never offer real folders
+        (None, false) => {
+            let home = app.path().home_dir().map_err(|error| error.to_string())?;
+            tauri::async_runtime::spawn_blocking(move || code::candidates(&home)).await.map_err(|error| error.to_string())?
+        }
+    };
+    Ok(json!({
+        "code": true,
+        "setUp": true,
+        "offered": offered.iter().map(|folder| folder.display().to_string()).collect::<Vec<_>>(),
+        "chosen": shell.code_folders(),
+        "skipped": shell.settings.lock().unwrap().code_skipped.clone(),
+    }))
+}
+
+/// The code folders window's Save: the folders whose code is searched (code search starts with the first; none turns
+/// it off), and the folders skipped in them.
+#[tauri::command]
+fn set_code_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>)
+    -> Result<(), String> {
+    if folders.is_empty() {
+        return turn_off_code(app, shell);
+    }
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        if settings.code_folders.iter().any(|folder| !folders.contains(folder)) {
+            shell.prune.store(true, Ordering::SeqCst);
+        }
+        settings.code_folders = folders;
+        settings.code_skipped = skipped;
+        settings.delete_code_index = false;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    apply_folders(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn choose_code_folders(app: AppHandle) {
+    later(&app, |app| {
+        let _ = show_code_folders(app);
+    });
+}
+
+/// Settings → Code: stops searching the code in a folder (its files leave the code index).
+#[tauri::command]
+fn remove_code_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, folder: String) -> Result<(), String> {
+    let off = {
+        let mut settings = shell.settings.lock().unwrap();
+        let inside = |path: &str| Path::new(path).starts_with(&folder);
+        settings.code_folders.retain(|path| path != &folder);
+        settings.code_skipped.retain(|path| !inside(path));
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+        settings.code_folders.is_empty()
+    };
+    if off {
+        return turn_off_code(app, shell);
+    }
+    shell.prune.store(true, Ordering::SeqCst);
+    apply_folders(&app);
+    Ok(())
+}
+
+/// Settings → Code → Turn Off Code Search: no code folders, and the code index is deleted once the helpers let it go
+/// (the search service closes it on hearing there are none; the index helper starts again without it).
+#[tauri::command]
+fn turn_off_code(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.code_folders.clear();
+        settings.code_skipped.clear();
+        settings.delete_code_index = true;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    let shell = shell.inner().clone();
+    let request = folders_request(&shell);
+    tauri::async_runtime::spawn(async move {
+        let _ = shell.search.ask(request).await;
+        // Stopped rather than asked to sync: one still reading code holds the code index until it's done.
+        shell.index.stop();
+        watch_folders(&app);
+        delete_code_index(&shell);
+    });
+    Ok(())
+}
+
+/// Settings → Code: the editor code results open in (an editor's id, or "default" for the file's default app).
+#[tauri::command]
+fn set_code_editor(shell: State<'_, Arc<Shell>>, editor: String) -> Result<(), String> {
+    let mut settings = shell.settings.lock().unwrap();
+    settings.code_editor = editor;
+    settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
 }
 
 /// Settings → Folders: the folders skipped inside the ones searched.

@@ -10,6 +10,7 @@
   <nav class="tabs" id="tabs" role="tablist">
     <button role="tab" data-tab="general">General</button>
     <button role="tab" data-tab="folders">Folders</button>
+    <button role="tab" data-tab="code">Code</button>
     <button role="tab" data-tab="storage">Storage</button>
   </nav>
   <main class="settings">
@@ -72,6 +73,36 @@
             <input type="time" id="hours-end"></span>
         </span>
       </label>
+    </section>
+
+    <section class="tab" id="code" role="tabpanel" hidden>
+      <p class="intro">DigUp can find code by what it does. Type “code:” in the search panel and say what the code does,
+        or pick Code in the window. Results open in your editor at the line.</p>
+      <div class="card status-card" id="code-status" hidden>
+        <div class="status-text">
+          <div class="status-line" id="code-status-line"></div>
+          <div class="status-detail" id="code-status-detail"></div>
+        </div>
+      </div>
+
+      <h3>Code folders</h3>
+      <div class="card list" id="code-rows"></div>
+      <button class="link" id="add-code">Add Folders…</button>
+
+      <h3>Open code in</h3>
+      <select class="field" id="code-editor"></select>
+      <p class="note">DigUp reads what git keeps in these folders: source, configuration, a repository's docs and
+        notebooks. It leaves out what git ignores, dependencies and build output, data files, keys and password files.
+        Code gets an index of its own and shows up only when you search for code.</p>
+
+      <button class="link danger" id="code-off" hidden>Turn Off Code Search…</button>
+      <div class="confirm" id="code-off-confirm" hidden>
+        <p id="code-off-text"></p>
+        <div class="actions">
+          <button id="code-off-cancel">Cancel</button>
+          <button class="danger" id="code-off-go">Turn Off</button>
+        </div>
+      </div>
     </section>
 
     <section class="tab" id="storage" role="tabpanel" hidden>

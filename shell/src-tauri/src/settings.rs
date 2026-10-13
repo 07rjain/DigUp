@@ -24,6 +24,13 @@ pub struct Settings {
     /// Index only between these times of day (hours.rs); the times are kept while it's off.
     pub index_hours_on: bool,
     pub index_hours: Hours,
+    /// Code search: its folders (an index of its own, code.sqlite), the folders skipped inside them, and the editor its
+    /// results open in (editors.rs: an editor's id, "" for the first one found, "default" for the file's default app).
+    pub code_folders: Vec<String>,
+    pub code_skipped: Vec<String>,
+    pub code_editor: String,
+    /// Code search was turned off and its index is still to be deleted (Windows won't delete a file a helper has open).
+    pub delete_code_index: bool,
 }
 
 impl Settings {

@@ -1,4 +1,4 @@
-/* The Settings window: setup.css's look (colors, keys, notes), with tabs: General, Folders, Storage. */
+/* The Settings window: setup.css's look (colors, keys, notes), with tabs: General, Folders, Code, Storage. */
 
 body { display: flex; flex-direction: column; }
 
@@ -50,7 +50,15 @@ input.field {
   width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--card);
   border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
 }
-input.field:focus { outline: 2px solid color-mix(in srgb, var(--moss) 50%, transparent); outline-offset: -1px; }
+input.field:focus, select.field:focus { outline: 2px solid color-mix(in srgb, var(--moss) 50%, transparent); outline-offset: -1px; }
+select.field {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--card); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 8px; min-width: 240px;
+}
+
+.intro { font-size: 12px; color: var(--secondary); line-height: 1.5; margin: 14px 0 0; }
+.link.danger { color: #c4441c; margin-top: 14px; }
+#code-off-confirm { border: 1px solid var(--line); border-radius: 10px; margin-top: 14px; }
 
 .facts .fact { display: flex; justify-content: space-between; gap: 16px; padding: 9px 12px; border-top: 1px solid var(--line); font-size: 13px; }
 .facts .fact:first-child { border-top: 0; }

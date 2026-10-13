@@ -1,7 +1,8 @@
 // DigUp's Settings window, its tabs after the Mac app's (Sources/DigUpApp/SettingsWindow.swift). General: opening at
 // login, centering the search panel where the desktop places windows itself (it costs memory, so it's a choice), and
 // where the shortcut lives. Folders: how indexing goes (with Pause), each folder searched and how far along it is, the
-// folders and file types skipped, and the set hours. Storage: the model, the index, privacy.
+// folders and file types skipped, and the set hours. Code: code search's folders (added in setup's folder list for code),
+// the editor its results open in, turning it off. Storage: the model, the index, privacy.
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -21,6 +22,8 @@ const notes = {
 let info = {};
 let summaries = null;        // what's indexed under each folder (search-service's summaries)
 let removing = null;         // the folder whose removal is being confirmed
+let codeSummaries = null;    // what's indexed under each code folder
+let removingCode = null;     // the code folder whose removal is being confirmed
 
 // MARK: Tabs
 
@@ -30,6 +33,7 @@ function showTab(name) {
   }
   for (const tab of document.querySelectorAll(".tab")) tab.hidden = tab.id !== name;
   if (name === "folders") loadSummaries();
+  if (name === "code") loadCodeSummaries();
 }
 
 for (const button of document.querySelectorAll("#tabs button")) button.onclick = () => showTab(button.dataset.tab);
@@ -127,8 +131,9 @@ function renderFields() {
   $("hours-end").value = clock(hours.end);
 }
 
-/// A folder searched: its name, where it is, what's in it, how much of it is indexed, and Remove.
-function folderRow(folder, summary) {
+/// A folder searched (with `code`, a code folder): its name, where it is, what's in it, how much of it is indexed, and
+/// Remove.
+function folderRow(folder, summary, code = false) {
   const row = element("div", "row");
   const text = element("div", "text");
   const name = element("div", "name", nameOf(folder));
@@ -147,26 +152,38 @@ function folderRow(folder, summary) {
     ].filter(Boolean).join(" · ");
     if (states) side.append(element("div", "states", states));
   }
-  row.append(text, side, removeButton("Stop searching this folder", () => {
-    removing = folder;
-    renderFolders();
+  row.append(text, side, removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
+    if (code) {
+      removingCode = folder;
+      renderCode();
+    } else {
+      removing = folder;
+      renderFolders();
+    }
   }));
   return row;
 }
 
 /// "Stop searching “Pictures”?", in place, as the Mac app asks.
-function confirmRemoval(folder, summary) {
+function confirmRemoval(folder, summary, code = false) {
   const box = element("div", "confirm");
   const files = summary ? `Its ${summary.files.toLocaleString()} ${summary.files === 1 ? "file leaves" : "files leave"}` : "Its files leave";
-  box.append(element("p", "", `Stop searching “${nameOf(folder)}”? ${files} the index. Adding it back later indexes them again.`));
+  const last = code && (info.code?.folders || []).length === 1;
+  box.append(element("p", "", code
+    ? `Stop searching the code in “${nameOf(folder)}”? ${files} the code index.${last ? " That turns code search off." : ""}`
+    : `Stop searching “${nameOf(folder)}”? ${files} the index. Adding it back later indexes them again.`));
   const actions = element("div", "actions");
   const cancel = element("button", "", "Cancel");
-  cancel.onclick = () => { removing = null; renderFolders(); };
+  cancel.onclick = () => {
+    removing = removingCode = null;
+    renderFolders();
+    renderCode();
+  };
   const remove = element("button", "danger", "Remove");
   remove.onclick = async () => {
-    removing = null;
+    removing = removingCode = null;
     try {
-      await invoke("remove_folder", { folder });
+      await invoke(code ? "remove_code_folder" : "remove_folder", { folder });
     } catch (error) {
       fail(error);
     }
@@ -227,6 +244,87 @@ $("hours").addEventListener("change", applyHours);
 $("hours-start").addEventListener("change", applyHours);
 $("hours-end").addEventListener("change", applyHours);
 
+// MARK: Code
+
+async function loadCodeSummaries() {
+  if (!(info.code?.folders || []).length) {
+    codeSummaries = [];
+  } else {
+    try {
+      codeSummaries = (await ask({ op: "summaries", code: true })).roots || [];
+    } catch {
+      codeSummaries = codeSummaries || [];
+    }
+  }
+  renderCode();
+}
+
+function renderCode() {
+  const code = info.code || { folders: [], editors: [], editor: "default" };
+  const on = code.folders.length > 0;
+  // How far the code index is, over all code folders.
+  const total = { files: 0, indexed: 0, pending: 0 };
+  for (const summary of codeSummaries || []) {
+    for (const name of Object.keys(total)) total[name] += summary[name] || 0;
+  }
+  $("code-status").hidden = !on || codeSummaries == null;
+  $("code-status-line").textContent = total.pending
+    ? `Reading code: ${total.indexed.toLocaleString()} of ${total.files.toLocaleString()} files`
+    : `${total.indexed.toLocaleString()} ${total.indexed === 1 ? "file" : "files"} of code searchable`;
+  const size = info.storage?.codeBytes;
+  $("code-status-detail").textContent = size ? `The code index takes ${bytes(size)}` : "";
+
+  const rows = $("code-rows");
+  rows.replaceChildren();
+  if (!on) rows.append(element("div", "empty", "Code search is off. Choose the folders that hold your code to turn it on."));
+  for (const folder of code.folders) {
+    const summary = (codeSummaries || []).find((item) => samePath(item.path, folder)) || null;
+    rows.append(folderRow(folder, summary, true));
+    if (removingCode && samePath(removingCode, folder)) rows.append(confirmRemoval(folder, summary, true));
+  }
+  $("add-code").textContent = on ? "Add Folders…" : "Choose Code Folders…";
+
+  const select = $("code-editor");
+  const options = [...code.editors, { id: "default", name: "The file's default app" }];
+  select.replaceChildren(...options.map((editor) => {
+    const option = element("option", "", editor.name);
+    option.value = editor.id;
+    return option;
+  }));
+  select.value = code.editor;
+  $("code-off").hidden = !on || !$("code-off-confirm").hidden;
+}
+
+$("add-code").onclick = () => invoke("choose_code_folders").catch(fail);
+$("code-editor").addEventListener("change", async () => {
+  try {
+    await invoke("set_code_editor", { editor: $("code-editor").value });
+    info.code.editor = $("code-editor").value;
+  } catch (error) {
+    fail(error);
+  }
+});
+$("code-off").onclick = () => {
+  const size = info.storage?.codeBytes;
+  $("code-off-text").textContent = "Turn off code search? Its index" + (size ? ` (${bytes(size)})` : "")
+    + " is deleted, and turning it on again reads the code again.";
+  $("code-off-confirm").hidden = false;
+  $("code-off").hidden = true;
+};
+$("code-off-cancel").onclick = () => {
+  $("code-off-confirm").hidden = true;
+  renderCode();
+};
+$("code-off-go").onclick = async () => {
+  $("code-off-confirm").hidden = true;
+  try {
+    await invoke("turn_off_code");
+  } catch (error) {
+    fail(error);
+  }
+  await refresh();
+};
+
 // MARK: Storage
 
 function renderStorage() {
@@ -261,6 +359,7 @@ function countsText(kinds) {
     part(kinds.doc, "document", "documents"),
     part(kinds.audio, "recording", "recordings"),
     part(kinds.video, "video", "videos"),
+    part(kinds.code, "file of code", "files of code"),
   ].filter(Boolean).join(" · ");
 }
 
@@ -316,8 +415,13 @@ async function refresh() {
   renderFolders();
   renderFields();
   renderStorage();
+  renderCode();
   if (!$("folders").hidden) loadSummaries();
+  if (!$("code").hidden) loadCodeSummaries();
 }
+
+// Back from the code folders window (or anything else that changed the settings): shown as they are now.
+window.addEventListener("focus", () => { refresh().catch(() => {}); });
 
 // Indexing as it goes, and what's indexed under each folder at most every two seconds.
 let summariesTimer = null;
@@ -326,8 +430,11 @@ tauri.event.listen("state", ({ payload }) => {
   info.state = payload;
   renderStatus();
   renderStorage();
-  if (!$("folders").hidden && (payload.searchable !== before.searchable || payload.pending !== before.pending) && !summariesTimer) {
-    summariesTimer = setTimeout(() => { summariesTimer = null; loadSummaries(); }, 2000);
+  // The code index's progress isn't in the state: its folders are asked again while the tab is up.
+  const counts = payload.searchable !== before.searchable || payload.pending !== before.pending;
+  const load = !$("folders").hidden && counts ? loadSummaries : !$("code").hidden ? loadCodeSummaries : null;
+  if (load && !summariesTimer) {
+    summariesTimer = setTimeout(() => { summariesTimer = null; load(); }, 2000);
   }
 });
 

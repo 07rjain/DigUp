@@ -40,6 +40,12 @@ function placeOf(hit) {
   }
 }
 
+/// The line a code result opens at in an editor: where its stretch of lines is about (the definition a name points
+/// to), else its first line; a notebook at its top (the Mac app's Moments).
+function codeLine(hit) {
+  return hit.segment === "lines" ? Math.max(1, Math.trunc(hit.focus ?? hit.loc ?? 1)) : 1;
+}
+
 /// The lines (or a notebook's cells) of code that matched: "lines 12–40", "cell 3".
 function span(hit) {
   if (hit.loc == null) return null;
