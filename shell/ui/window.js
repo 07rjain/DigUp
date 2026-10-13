@@ -985,6 +985,11 @@ function debugSearch(query) {
 
 function report() {
   debugPending = false;
+  // With --debug-settings, Settings opens as its button opens it, and Settings reports once its page is up.
+  if (state.info.debugSettings) {
+    setTimeout(() => $("settings").click(), 500);
+    return;
+  }
   setTimeout(() => {
     const thumbs = [...$content.querySelectorAll(".cell img")];
     const big = $side.querySelector(".frame img, .passage, .code-lines, .audio-moment, .placeholder");

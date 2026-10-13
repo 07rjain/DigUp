@@ -34,6 +34,8 @@ pub struct Options {
     /// Debug runs: the window opens (hidden unless `debug_show`) with this query typed in ("" for its home) and reports
     /// what it showed.
     pub debug_window: Option<String>,
+    /// Debug runs with `debug_window`: the window then opens Settings as its button does, and Settings reports instead.
+    pub debug_settings: bool,
     /// A desktop shortcut's command (hotkey.rs): show or hide the panel of the DigUp already running, or start DigUp
     /// with the panel up.
     pub toggle: bool,
@@ -56,6 +58,7 @@ impl Options {
             debug_quit: false,
             debug_show: false,
             debug_window: None,
+            debug_settings: false,
             toggle: false,
             at_login: false,
         };
@@ -76,6 +79,7 @@ impl Options {
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
                 "--debug-window" => options.debug_window = Some(value()?),
+                "--debug-settings" => options.debug_settings = true,
                 "--toggle" => options.toggle = true,
                 "--at-login" => options.at_login = true,
                 _ => return Err(format!("unknown argument {arg}")),

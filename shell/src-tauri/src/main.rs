@@ -348,6 +348,7 @@ fn window_info(shell: State<'_, Arc<Shell>>) -> Value {
         "state": shell.snapshot(),
         "search": search.map(|(query, kind)| json!({"query": query, "kind": kind})),
         "debugQuery": shell.options.debug_window,
+        "debugSettings": shell.options.debug_settings,
     })
 }
 
@@ -397,11 +398,22 @@ fn close_window(window: tauri::WebviewWindow) {
     let _ = window.close();
 }
 
-/// Runs on the main thread once the command at hand has returned: a window made inside a command's handler can
-/// deadlock on Windows.
+/// Runs `work` on the main thread from its event loop, after whatever called this has returned. It's asked from another
+/// thread: asked on the main thread, `run_on_main_thread` runs it at once, and a window made inside a page's command or
+/// inside the message a second launch sends deadlocks WebView2 on Windows (a blank window and a frozen DigUp).
 fn later(app: &AppHandle, work: impl FnOnce(&AppHandle) + Send + 'static) {
     let handle = app.clone();
-    let _ = app.run_on_main_thread(move || work(&handle));
+    tauri::async_runtime::spawn(async move {
+        let main = handle.clone();
+        let _ = handle.run_on_main_thread(move || work(&main));
+    });
+}
+
+/// The window, or setup while DigUp isn't set up (the tray's Open DigUp, a click on the tray icon, a second launch).
+fn show_window_or_setup(app: &AppHandle) {
+    later(app, |app| {
+        let _ = if app.state::<Arc<Shell>>().is_set_up() { show_window(app) } else { show_setup(app) };
+    });
 }
 
 fn main() {
@@ -425,9 +437,7 @@ fn main() {
             if args.iter().any(|arg| arg == "--toggle") {
                 toggle_panel(app)
             } else {
-                later(app, |app| {
-                    let _ = if app.state::<Arc<Shell>>().is_set_up() { show_window(app) } else { show_setup(app) };
-                });
+                show_window_or_setup(app);
             }
         }))
         .plugin(tauri_plugin_opener::init())
@@ -724,7 +734,9 @@ fn remake_panel(app: &AppHandle) {
 
 fn show_panel(app: &AppHandle) {
     if !app.state::<Arc<Shell>>().is_set_up() {
-        let _ = show_setup(app);
+        later(app, |app| {
+            let _ = show_setup(app);
+        });
         return;
     }
     let Some(panel) = panel_window(app) else { return };
@@ -819,12 +831,14 @@ fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         let _ = window.set_focus();
         return Ok(());
     }
+    let options = &app.state::<Arc<Shell>>().options;
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("DigUp Settings")
         .inner_size(600.0, 460.0)
         .resizable(false)
         .maximizable(false)
         .center()
+        .visible(!options.debug_settings || options.debug_show)
         .build()?;
     Ok(())
 }
@@ -839,6 +853,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "canCenter": shell.wayland,
         "hotkey": shell.hotkey_text(),
         "shortcut": {"method": shell.shortcut.name(), "command": hotkey::toggle_command()},
+        "debug": shell.options.debug_settings,
     })
 }
 
@@ -858,8 +873,8 @@ fn set_center_panel(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> R
         settings.center_panel = on;
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
-    let remake = app.clone();
-    app.run_on_main_thread(move || remake_panel(&remake)).map_err(|error| error.to_string())
+    later(&app, remake_panel);
+    Ok(())
 }
 
 /// "CommandOrControl+Shift+Space" as people read it here: "Ctrl+Shift+Space", or "⇧⌘Space" on a Mac.
@@ -918,20 +933,14 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "search" => show_panel(app),
-            "open" => {
-                if app.state::<Arc<Shell>>().is_set_up() {
-                    let _ = show_window(app);
-                } else {
-                    let _ = show_setup(app);
-                }
-            }
-            "folders" => {
+            "open" => show_window_or_setup(app),
+            "folders" => later(app, |app| {
                 let _ = show_setup(app);
-            }
+            }),
             "index" => run_index(app),
-            "settings" => {
+            "settings" => later(app, |app| {
                 let _ = show_settings(app);
-            }
+            }),
             "quit" => quit(app),
             _ => {}
         })
@@ -940,12 +949,7 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
             // tray icon does there; the menu is on the other button. The panel is the shortcut's.
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                 if !cfg!(target_os = "macos") {
-                    let app = tray.app_handle();
-                    if app.state::<Arc<Shell>>().is_set_up() {
-                        let _ = show_window(app);
-                    } else {
-                        let _ = show_setup(app);
-                    }
+                    show_window_or_setup(tray.app_handle());
                 }
             }
         })

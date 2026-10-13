@@ -31,6 +31,11 @@ async function start() {
   $("shortcut-note").textContent = note || "";
   $("shortcut-command").hidden = info.shortcut.method !== "by_hand";
   $("shortcut-command").textContent = info.shortcut.command;
+  // Debug runs (--debug-settings): the page is up.
+  if (info.debug) {
+    invoke("debug_report", { report: { settings: true, hotkey: info.hotkey, openAtLogin: info.openAtLogin,
+                                       canOpenAtLogin: info.canOpenAtLogin } }).catch(() => {});
+  }
 }
 
 /// A switch: the shell does it, or the box goes back and says why.
