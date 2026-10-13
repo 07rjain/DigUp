@@ -38,6 +38,8 @@ done
 
 tauri=(npx --yes @tauri-apps/cli@2.12.2)
 if cargo tauri --version > /dev/null 2>&1; then tauri=(cargo tauri); fi
+# Packages of an earlier build (another version) would be taken for this one's.
+rm -rf shell/src-tauri/target/release/bundle/deb shell/src-tauri/target/release/bundle/appimage
 # The helper folder goes in as the packages' resources here only: Tauri checks resources on every build.
 (cd shell/src-tauri && "${tauri[@]}" build --bundles deb,appimage --config '{"bundle":{"resources":{"helper/":"helper/"}}}')
 
