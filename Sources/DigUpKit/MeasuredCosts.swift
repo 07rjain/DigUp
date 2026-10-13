@@ -19,12 +19,16 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
     /// model's work (matrix multiplies on the GPU), `ocr` for Vision's text recognition. `kinds`, when there: each of
     /// `Costs`' fields as it compares, measured with the model itself (Linux and Windows, `digup speed --model`), in
     /// place of the other two. `device`, where there's a GPU: "gpu" or "cpu", whichever ran the model faster here (a
-    /// weak integrated GPU can be slower than the processor it sits in); the helpers then run on it.
+    /// weak integrated GPU can be slower than the processor it sits in); the helpers then run on it. `checks`: how many
+    /// times the model was timed here; `doubtful`: the last time was at a bad moment (the machine never settled, or its
+    /// best try wasn't seen twice), so it's timed again at the next start.
     public struct Speed: Codable, Sendable, Equatable {
         public var embedding: Double
         public var ocr: Double
         public var kinds: [String: Double]?
         public var device: String?
+        public var checks: Int?
+        public var doubtful: Bool?
 
         public init(embedding: Double, ocr: Double, kinds: [String: Double]? = nil, device: String? = nil) {
             self.embedding = embedding
@@ -137,11 +141,13 @@ public struct MeasuredCosts: Codable, Sendable, Equatable {
 
     private static let lock = NSLock()
 
-    /// Saves this machine's speed (`Speed.measure`) beside what's measured in `folder`.
-    public static func setSpeed(_ speed: Speed, in folder: URL) {
+    /// Saves this machine's speed (`Speed.measure`) beside what's measured in `folder`, and forgets what indexing
+    /// measured if asked (the model moved from the GPU to the processor, or back).
+    public static func setSpeed(_ speed: Speed, in folder: URL, forgetTallies: Bool = false) {
         lock.withLock {
             var saved = load(from: folder)
             saved.speed = speed
+            if forgetTallies { saved.tallies = [:] }
             saved.save(to: folder)
         }
     }

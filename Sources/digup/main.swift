@@ -17,7 +17,7 @@ let usage = """
       digup search <words>... [--kind K,K] [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup status                            what's in the index
-      digup speed [--model [--if-needed]] [--json]
+      digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
                                               this machine's speed next to the M4 Pro behind the estimates, and
                                               what indexing has measured here (costs.json in the index folder);
                                               --model times the model itself (Linux and Windows) and keeps it
@@ -65,7 +65,7 @@ struct Arguments {
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit", "--tries"]
+                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -477,8 +477,8 @@ func speed(_ args: Arguments) throws {
 }
 
 /// The model timed on the processor alone, in a process of its own (llama.cpp loads its backends once a process), with
-/// the vectors it made.
-func processorAlone(folder: URL, tries: Int) throws -> (times: ModelSpeed.Times, load: Double, vectors: [String: [Float]]) {
+/// the vectors it made, and how long it took to load.
+func processorAlone(folder: URL, tries: Int) throws -> (measured: ModelSpeed.Measurement, load: Double) {
     guard let program = Bundle.main.executableURL else { throw CLIError("where is digup?") }
     let process = Process()
     process.executableURL = program
@@ -496,62 +496,99 @@ func processorAlone(folder: URL, tries: Int) throws -> (times: ModelSpeed.Times,
           let times = ModelSpeed.Times(fields: seconds)
     else { throw CLIError("the processor's speed check failed") }
     let vectors = (reply["vectors"] as? [String: [Double]] ?? [:]).mapValues { $0.map(Float.init) }
-    return (times, load, vectors)
+    return (ModelSpeed.Measurement(times: times, vectors: vectors, tries: reply["tries"] as? [Double] ?? [],
+                                   steady: reply["steady"] as? Bool ?? true, others: reply["others"] as? Double ?? 0),
+            load)
 }
 
-/// `digup speed --model [--if-needed] [--json]`: the model timed on this machine, kept in costs.json beside the index
-/// for estimates. Where there's a GPU it's timed against the processor alone, and the faster is kept (`device`) for
-/// every helper: a weak integrated GPU can be slower than its processor (an i5-8350U's UHD 620 under Vulkan: 76 s
-/// against 44 s). The GPU is kept only if its vectors are the processor's too (cosine 0.999, as ReferenceVectorTests
-/// asks): Mesa's lavapipe made pictures and sound at 0.94–0.97. `--if-needed` leaves one measured before alone, unless it predates that choice. The shell runs it once
-/// the model is in. `--measure-only`: the times, nothing kept (the processor's run, in a process of its own).
+/// `digup speed --model [--if-needed] [--when-quiet S] [--tries N] [--json]`: the model timed on this machine, kept in
+/// costs.json beside the index for estimates. Where there's a GPU it's timed against the processor alone, and the
+/// faster is kept (`device`) for every helper: a weak integrated GPU can be slower than its processor (an i5-8350U's
+/// UHD 620 under Vulkan: 76 s against 44 s). The GPU is kept only if its vectors are the processor's too (cosine 0.999,
+/// as ReferenceVectorTests asks): Mesa's lavapipe made pictures and sound at 0.94–0.97. The processor goes first, so a
+/// GPU that's clearly slower stops after two tries.
+///
+/// One check was timed at a bad moment (an RTX 4050 laptop taken for 30 times slower than its indexing went), so
+/// `--when-quiet` waits up to S seconds for other programs to settle, each input's time is the best of up to `--tries`
+/// (3), and a check with reason for doubt (the machine never settled, its best try wasn't seen twice, or indexing went
+/// four times faster than it said) is timed again by the next `--if-needed`, up to three checks. `--if-needed` otherwise leaves one measured before alone, unless it predates the GPU's choice.
+/// The shell runs it once the model is in. `--measure-only`: the times, nothing kept (the processor's run).
 func modelSpeed(_ args: Arguments) throws {
     let folder = args.indexFolder
     let json = args.flags.contains("--json")
-    var speed = MeasuredCosts.load(from: folder).speed ?? MeasuredCosts.Speed(embedding: 1, ocr: 1)
+    let tries = args.values["--tries"].flatMap(Int.init) ?? 3
+    let log = folder.appendingPathComponent("worker.log")
+    if args.flags.contains("--measure-only") {
+        let started = Date()
+        let model = try makeEmbedder(textOnly: false, log: log)
+        let load = Date().timeIntervalSince(started)
+        let measured = try ModelSpeed.measure(model, tries: tries)
+        model.close()
+        emit(["event": "speed", "seconds": measured.times.fields, "load": load, "vectors": measured.vectors,
+              "tries": measured.tries, "steady": measured.steady, "others": measured.others])
+        return
+    }
+    let saved = MeasuredCosts.load(from: folder)
+    var speed = saved.speed ?? MeasuredCosts.Speed(embedding: 1, ocr: 1)
     let compares = !LlamaEmbedder.cpuOnly && LlamaEmbedder.hasGPU && embedderSource() != nil
-    if args.flags.contains("--if-needed"), let kinds = speed.kinds, speed.device != nil || !compares {
+    let checks = speed.kinds == nil ? 0 : speed.checks ?? 1
+    let again = checks < 3 && (speed.doubtful == true || saved.pace.map { $0 < 0.25 } == true)
+    if args.flags.contains("--if-needed"), let kinds = speed.kinds, speed.device != nil || !compares, !again {
         if json { emit(["event": "speed", "kinds": kinds, "measured": false]) }
         return
     }
-    let tries = args.values["--tries"].flatMap(Int.init) ?? 1
+    let quiet = args.values["--when-quiet"].flatMap(Double.init).map { SystemLoad.waitForQuiet(limit: $0) }
+        ?? (waited: 0, settled: true)
     let started = Date()
-    let model = try makeEmbedder(textOnly: false, log: folder.appendingPathComponent("worker.log"))
-    let loaded = Date()
-    let measured = try ModelSpeed.measure(model, tries: tries)
+    let alone = compares ? try processorAlone(folder: folder, tries: tries) : nil
+    let loading = Date()
+    let model = try makeEmbedder(textOnly: false, log: log)
+    var load = Date().timeIntervalSince(loading)
+    let measured = try ModelSpeed.measure(model, tries: tries, rival: alone?.measured.total)
     model.close()
-    var (times, load) = (measured.times, loaded.timeIntervalSince(started))
-    if args.flags.contains("--measure-only") {
-        emit(["event": "speed", "seconds": times.fields, "load": load, "vectors": measured.vectors])
-        return
-    }
+    var (kept, other) = (measured, alone?.measured)
     var compared: [String: Any] = [:]
-    if compares {
-        let alone = try processorAlone(folder: folder, tries: tries)
-        let agreement = ModelSpeed.agreement(measured.vectors, alone.vectors)
-        compared = ["gpu": times.fields.merging(["load": load]) { $1 }, "cpu": alone.times.fields.merging(["load": alone.load]) { $1 },
+    if let alone {
+        let agreement = ModelSpeed.agreement(measured.vectors, alone.measured.vectors)
+        func fields(_ run: ModelSpeed.Measurement, load: Double) -> [String: Any] {
+            ["seconds": run.times.fields, "load": load, "tries": run.tries, "steady": run.steady, "others": run.others]
+        }
+        compared = ["gpu": fields(measured, load: load), "cpu": fields(alone.measured, load: alone.load),
                     "agreement": agreement]
-        let sum = { (times: ModelSpeed.Times) in times.fields.values.reduce(0, +) }
-        speed.device = agreement >= 0.999 && sum(times) <= sum(alone.times) ? "gpu" : "cpu"
-        if speed.device == "cpu" { (times, load) = (alone.times, alone.load) }
+        speed.device = agreement >= 0.999 && measured.total <= alone.measured.total ? "gpu" : "cpu"
+        if speed.device == "cpu" { (kept, other, load) = (alone.measured, measured, alone.load) }
     }
-    speed.kinds = ModelSpeed.factors(times)
-    MeasuredCosts.setSpeed(speed, in: folder)
+    // Close times from a run whose best wasn't seen twice could have gone the other way. (Other programs' work while it
+    // timed isn't a reason: with every processor busy, the system's count and this process's differ by more than they
+    // do, and a busy machine shows as tries that don't match.)
+    let close = other.map { !$0.steady && $0.total < kept.total * 1.3 } ?? false
+    speed.kinds = ModelSpeed.factors(kept.times)
+    speed.checks = checks + 1
+    speed.doubtful = !quiet.settled || !kept.steady || close ? true : nil
+    // What indexing measured on the other device doesn't hold on this one.
+    MeasuredCosts.setSpeed(speed, in: folder, forgetTallies: saved.speed?.device.map { $0 != speed.device } ?? false)
     let total = Date().timeIntervalSince(started)
     if json {
-        var fields: [String: Any] = ["event": "speed", "kinds": speed.kinds ?? [:], "seconds": times.fields, "load": load,
-                                     "total": total, "measured": true]
+        var fields: [String: Any] = ["event": "speed", "kinds": speed.kinds ?? [:], "seconds": kept.times.fields,
+                                     "load": load, "total": total, "measured": true, "tries": kept.tries,
+                                     "others": kept.others, "waited": quiet.waited, "settled": quiet.settled,
+                                     "doubtful": speed.doubtful ?? false, "checks": checks + 1]
         if let device = speed.device { fields["device"] = device }
         fields.merge(compared) { $1 }
         emit(fields)
         return
     }
+    if quiet.waited > 0 {
+        print(String(format: "waited %.0f s for other programs to settle%@", quiet.waited, quiet.settled ? "" : " (they didn't)"))
+    }
     if let device = speed.device { print("runs on the \(device == "cpu" ? "processor (faster here than the GPU)" : "GPU")") }
-    print(String(format: "the model loaded in %.2f s; the check took %.1f s", load, total))
-    for (name, seconds) in times.fields.sorted(by: { $0.key < $1.key }) {
+    print(String(format: "the model loaded in %.2f s; the check took %.1f s; tries %@", load, total,
+                 kept.tries.map { String(format: "%.2f s", $0) }.joined(separator: ", ")))
+    for (name, seconds) in kept.times.fields.sorted(by: { $0.key < $1.key }) {
         let base = ModelSpeed.baseline.fields[name] ?? seconds
         print(String(format: "  %@ %.3f s (M4 Pro %.3f s, ×%.1f)", name, seconds, base, seconds / base))
     }
+    if speed.doubtful == true { print("in doubt (a busy moment): timed again at the next --if-needed") }
     print("kept in \(tilde(MeasuredCosts.file(in: folder).path)): " + (speed.kinds ?? [:]).sorted { $0.key < $1.key }
         .map { String(format: "%@ ×%.1f", $0.key, $0.value) }.joined(separator: " · "))
 }

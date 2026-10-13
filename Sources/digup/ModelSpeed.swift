@@ -39,9 +39,27 @@ enum ModelSpeed {
         }
     }
 
-    /// Times each input once after a first run (the backend loads, a GPU compiles its kernels), the best of `tries`;
-    /// with the vectors it made of them ("text", "picture", "sound"), for comparing the GPU's with the processor's.
-    static func measure(_ model: any Embedder, tries: Int = 1) throws -> (times: Times, vectors: [String: [Float]]) {
+    /// What a check found: each input's best time, the vectors it made ("text", "picture", "sound": for comparing the
+    /// GPU's with the processor's), each try's seconds, whether its best was seen twice, and the processors' worth of
+    /// other programs' work while it timed (`SystemLoad`).
+    struct Measurement {
+        var times: Times
+        var vectors: [String: [Float]]
+        var tries: [Double]
+        var steady: Bool
+        var others: Double
+
+        var total: Double { times.text + times.picture + times.sound }
+    }
+
+    /// Two tries within this of each other agree.
+    static let agree = 1.15
+
+    /// A first run of each input (the backend loads, a GPU compiles its kernels), then tries of all three, each
+    /// input's best kept: at most `tries`, and fewer once the best try is matched by another (a busy moment makes a
+    /// try slower, never faster), or once two tries came out clearly slower than `rival`'s total (the other device's,
+    /// which is then kept whatever these times are).
+    static func measure(_ model: any Embedder, tries: Int = 3, rival: Double? = nil) throws -> Measurement {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DigUp-speed-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -50,28 +68,40 @@ enum ModelSpeed {
         try wave(seconds: 30).write(to: sound)
         let text = Prompts.document(title: "notes.txt", text: page)
 
+        func embedded(_ result: [Embedding]) throws -> [Float]? {
+            if let problem = result.first?.error { throw CLIError("the speed check's input failed: \(problem)") }
+            return result.first?.vector
+        }
         var vectors: [String: [Float]] = [:]
         vectors["text"] = try model.embedTexts([text]).first
-        vectors["picture"] = try model.embedImages([picture.path], budget: 140).first?.vector
-        vectors["sound"] = try model.embedAudio([sound.path]).first?.vector
-        func best(_ work: () throws -> Void) throws -> Double {
+        vectors["picture"] = try embedded(model.embedImages([picture.path], budget: 140))
+        vectors["sound"] = try embedded(model.embedAudio([sound.path]))
+
+        func timed(_ work: () throws -> Void) throws -> Double {
+            let started = Date()
             try work()
-            var fastest = Double.infinity
-            for _ in 0..<tries {
-                let started = Date()
-                try work()
-                fastest = min(fastest, Date().timeIntervalSince(started))
-            }
-            return fastest
+            return Date().timeIntervalSince(started)
         }
-        func embedded(_ result: [Embedding]) throws {
-            if let problem = result.first?.error { throw CLIError("the speed check's input failed: \(problem)") }
+        var best = (text: Double.infinity, picture: Double.infinity, sound: Double.infinity)
+        var totals: [Double] = [], others: [Double] = []
+        func matched() -> Bool {
+            guard let fastest = totals.min() else { return false }
+            return totals.filter { $0 <= fastest * agree }.count >= 2
         }
-        let times = Times(
-            text: try best { _ = try model.embedTexts([text]) },
-            picture: try best { try embedded(model.embedImages([picture.path], budget: 140)) },
-            sound: try best { try embedded(model.embedAudio([sound.path])) })
-        return (times, vectors)
+        for _ in 0..<max(1, tries) {
+            let before = SystemLoad.sample()
+            let seconds = (text: try timed { _ = try model.embedTexts([text]) },
+                           picture: try timed { _ = try embedded(model.embedImages([picture.path], budget: 140)) },
+                           sound: try timed { _ = try embedded(model.embedAudio([sound.path])) })
+            if let before, let after = SystemLoad.sample() { others.append(SystemLoad.others(from: before, to: after)) }
+            best = (min(best.text, seconds.text), min(best.picture, seconds.picture), min(best.sound, seconds.sound))
+            totals.append(seconds.text + seconds.picture + seconds.sound)
+            if matched() { break }
+            if let rival, totals.filter({ $0 > rival * 1.3 }).count >= 2 { break }
+        }
+        return Measurement(times: Times(text: best.text, picture: best.picture, sound: best.sound), vectors: vectors,
+                           tries: totals, steady: matched(),
+                           others: others.isEmpty ? 0 : others.reduce(0, +) / Double(others.count))
     }
 
     /// How far two runs' vectors agree: the least cosine over the inputs both made (0 when one is missing).

@@ -81,5 +81,8 @@ import Testing
         let saved = MeasuredCosts.load(from: folder)
         #expect(saved.speed == MeasuredCosts.Speed(embedding: 1.5, ocr: 1))
         #expect(saved.tallies["docChunk"]?.units == 2)   // the speed joined what was there
+        MeasuredCosts.setSpeed(MeasuredCosts.Speed(embedding: 1, ocr: 1, kinds: ["image": 2], device: "cpu"), in: folder,
+                               forgetTallies: true)
+        #expect(MeasuredCosts.load(from: folder).tallies.isEmpty)   // measured on the other device
     }
 }
