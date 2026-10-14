@@ -157,7 +157,6 @@ jobs:
         with:
           swift-version: swift-6.4.0-release
           swift-build: 6.4.0-RELEASE
-          update-sdk-modules: true
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
       - name: Vulkan SDK
         shell: bash
