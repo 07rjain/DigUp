@@ -2,7 +2,9 @@
 # artifacts (nothing is published). By hand: `gh workflow run packages.yml`, or `-f ref=<branch or tag>`. The Mac app is
 # built and released on a Mac (scripts/release.sh). llama.cpp gets its Vulkan backend beside the CPU ones (the Vulkan
 # SDK's shader compiler is what makes scripts/build-llama.sh build it): a computer whose GPU runs the model faster than
-# its processor uses it (`digup speed --model` decides), any other the processor.
+# its processor uses it (`digup speed --model` decides), any other the processor. Each package is then installed and
+# launched once, hidden (scripts/check-*-package.sh): the .deb and the AppImage on Ubuntu 22.04 and 24.04 and Debian 12,
+# the installer on Windows.
 name: Packages
 
 on:
@@ -88,6 +90,45 @@ jobs:
             shell/src-tauri/target/release/bundle/deb/*.deb
             shell/src-tauri/target/release/bundle/appimage/*.AppImage
 
+  linux-check:
+    # The packages installed where people will: a bare container of each distribution (the .deb brings what it needs),
+    # then a hidden first launch.
+    needs: linux
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12"]
+    container: ${{ matrix.image }}
+    env:
+      # WebKit's web processes sandbox themselves with bubblewrap, whose namespaces Docker's default seccomp profile
+      # refuses inside a container; on a desktop they're sandboxed as usual.
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates xvfb xauth dbus
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: DigUp-linux-x64
+          path: packages
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          key: embeddinggemma-2-q8_0-bfcd298
+      - name: The .deb
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q ./packages/*.deb
+          MODELS="$PWD/models" scripts/check-linux-package.sh /usr/bin/digup-shell
+      - name: The AppImage
+        run: |
+          chmod +x packages/*.AppImage
+          MODELS="$PWD/models" scripts/check-linux-package.sh packages/*.AppImage
+
   windows:
     runs-on: windows-2025
     steps:
@@ -131,3 +172,10 @@ jobs:
         with:
           name: DigUp-windows-x64
           path: shell/src-tauri/target/release/bundle/nsis/*.exe
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          key: embeddinggemma-2-q8_0-bfcd298-windows
+      - name: The installer
+        shell: bash
+        run: MODELS="$PWD/models" scripts/check-windows-package.sh shell/src-tauri/target/release/bundle/nsis/*-setup.exe
