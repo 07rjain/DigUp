@@ -132,6 +132,20 @@ jobs:
         run: |
           chmod +x packages/*.AppImage
           MODELS="$PWD/models" scripts/check-linux-package.sh packages/*.AppImage
+      - name: The update signature
+        # Signed with the repository's key (once its secrets are set), the AppImage's signature must match the public key
+        # installed copies check updates with (tauri.conf.json), or no update could ever be installed.
+        if: matrix.image == 'ubuntu:24.04'
+        run: |
+          signature=$(ls packages/*.AppImage.sig 2> /dev/null || true)
+          if [ -z "$signature" ]; then
+            echo "not signed: the update signing key isn't in the repository's secrets"
+            exit 0
+          fi
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends minisign
+          sed -n 's/.*"pubkey": "\([^"]*\)".*/\1/p' shell/src-tauri/tauri.conf.json | base64 -d > "$RUNNER_TEMP/update.pub"
+          base64 -d "$signature" > "$RUNNER_TEMP/update.minisig"
+          minisign -V -p "$RUNNER_TEMP/update.pub" -m "${signature%.sig}" -x "$RUNNER_TEMP/update.minisig"
 
   windows:
     runs-on: windows-2025
