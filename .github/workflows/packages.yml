@@ -119,25 +119,25 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: DigUp-linux-x64
-          path: packages
+          path: packages   # as the bundle had them: deb/ and appimage/
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: models
           key: embeddinggemma-2-q8_0-bfcd298
       - name: The .deb
         run: |
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -q ./packages/*.deb
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q ./packages/deb/*.deb
           MODELS="$PWD/models" scripts/check-linux-package.sh /usr/bin/digup-shell
       - name: The AppImage
         run: |
-          chmod +x packages/*.AppImage
-          MODELS="$PWD/models" scripts/check-linux-package.sh packages/*.AppImage
+          chmod +x packages/appimage/*.AppImage
+          MODELS="$PWD/models" scripts/check-linux-package.sh packages/appimage/*.AppImage
       - name: The update signature
         # Signed with the repository's key (once its secrets are set), the AppImage's signature must match the public key
         # installed copies check updates with (tauri.conf.json), or no update could ever be installed.
         if: matrix.image == 'ubuntu:24.04'
         run: |
-          signature=$(ls packages/*.AppImage.sig 2> /dev/null || true)
+          signature=$(ls packages/appimage/*.AppImage.sig 2> /dev/null || true)
           if [ -z "$signature" ]; then
             echo "not signed: the update signing key isn't in the repository's secrets"
             exit 0
