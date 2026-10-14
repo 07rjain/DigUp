@@ -259,7 +259,10 @@ async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Opti
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        let output = command.output().map_err(|error| format!("can't run {}: {error}", helper.display()))?;
+        let child = command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn()
+            .map_err(|error| format!("can't run {}: {error}", helper.display()))?;
+        helper::adopt(&child);
+        let output = child.wait_with_output().map_err(|error| format!("can't run {}: {error}", helper.display()))?;
         Ok(String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok()).collect())
     })
     .await;
@@ -1824,7 +1827,12 @@ fn measure_then_index(app: &AppHandle) {
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
         let started = hours::clock(hours::now());
-        let reply = match command.output() {
+        command.stdout(std::process::Stdio::piped());
+        let output = command.spawn().and_then(|child| {
+            helper::adopt(&child);
+            child.wait_with_output()
+        });
+        let reply = match output {
             Ok(output) => String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok())
                 .last().unwrap_or_else(|| json!({"event": "speed", "error": format!("exit {}", output.status)})),
             Err(error) => json!({"event": "speed", "error": error.to_string()}),

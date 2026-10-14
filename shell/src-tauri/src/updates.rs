@@ -147,10 +147,12 @@ pub async fn check(app: &AppHandle, asked: bool) {
         }
         *phase = Phase::Checking;
     }
-    // Before DigUp exits for the Windows installer: the helpers stop (the installer replaces their files).
+    // Before DigUp exits for the Windows installer: the helpers stop, and any other `digup` it started (a speed check)
+    // ends and is gone, or the installer can't replace their files.
     let exiting = app.clone();
     let result = match app.updater_builder().on_before_exit(move || {
         stop_helpers(&exiting);
+        crate::helper::end_all();
         exiting.cleanup_before_exit();
     }).build() {
         Ok(updater) => updater.check().await,

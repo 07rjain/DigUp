@@ -66,6 +66,22 @@ impl Launch {
     }
 }
 
+/// A process started apart from the helpers here (the speed check, folder estimates): on Windows it joins their job, so it
+/// ends with DigUp, and with them before an update's installer runs.
+pub fn adopt(child: &Child) {
+    #[cfg(windows)]
+    job::add(child);
+    #[cfg(not(windows))]
+    let _ = child;
+}
+
+/// Before an update's installer replaces the helper's files (Windows, where a running program's files can't be
+/// replaced): every process in the job ends, and is gone, within five seconds.
+pub fn end_all() {
+    #[cfg(windows)]
+    job::end_all();
+}
+
 /// Asks the process to stop (`farewell` on stdin, then stdin closed), and ends it if it hasn't within two seconds.
 fn stop(mut child: Child, mut stdin: ChildStdin, farewell: &str) {
     let _ = writeln!(stdin, "{farewell}").and_then(|_| stdin.flush());
@@ -340,7 +356,8 @@ mod job {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -369,6 +386,24 @@ mod job {
         if let Some(job) = job() {
             // SAFETY: both handles are valid: the job's for this process's life, the child's while `child` lives.
             unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) };
+        }
+    }
+
+    pub fn end_all() {
+        let Some(job) = job() else { return };
+        // SAFETY: the job's handle is valid for this process's life; `info` is the size the query is told.
+        unsafe {
+            TerminateJobObject(job.0, 1);
+            for _ in 0..100 {
+                let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+                let asked = QueryInformationJobObject(job.0, JobObjectBasicAccountingInformation,
+                                                      &mut info as *mut _ as *mut _, std::mem::size_of_val(&info) as u32,
+                                                      std::ptr::null_mut());
+                if asked == 0 || info.ActiveProcesses == 0 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
     }
 }
