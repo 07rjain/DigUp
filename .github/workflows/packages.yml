@@ -4,7 +4,8 @@
 # SDK's shader compiler is what makes scripts/build-llama.sh build it): a computer whose GPU runs the model faster than
 # its processor uses it (`digup speed --model` decides), any other the processor. Each package is then installed and
 # launched once, hidden (scripts/check-*-package.sh): the .deb and the AppImage on Ubuntu 22.04 and 24.04 and Debian 12,
-# the installer on Windows.
+# the installer on Windows. With the update signing key in the repository's secrets, the installer and the AppImage
+# come with the .sig files the update feed needs (scripts/update-feed.py).
 name: Packages
 
 on:
@@ -72,6 +73,8 @@ jobs:
       - name: Build
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1   # Tauri's AppImage tools are AppImages, and a container has no FUSE
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           scripts/fetch-vendor.sh
           scripts/build-llama.sh
@@ -89,6 +92,7 @@ jobs:
           path: |
             shell/src-tauri/target/release/bundle/deb/*.deb
             shell/src-tauri/target/release/bundle/appimage/*.AppImage
+            shell/src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
   linux-check:
     # The packages installed where people will: a bare container of each distribution (the .deb brings what it needs),
@@ -168,10 +172,15 @@ jobs:
           scripts/fetch-vendor.sh
           scripts/build-llama.sh
           FFMPEG="$temp/$ffmpeg/bin" scripts/package-windows.sh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: DigUp-windows-x64
-          path: shell/src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            shell/src-tauri/target/release/bundle/nsis/*.exe
+            shell/src-tauri/target/release/bundle/nsis/*.exe.sig
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: models
